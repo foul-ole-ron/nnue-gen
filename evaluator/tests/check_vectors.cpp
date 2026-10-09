@@ -9,13 +9,9 @@
 #include "tumbleweed_nnue.hpp"
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::fprintf(stderr, "usage: %s <net.bin> <test_vectors.bin>\n", argv[0]);
-        return 2;
-    }
     try {
-        const auto net = tumbleweed::Network::load(argv[1]);
-        std::ifstream in(argv[2], std::ios::binary);
+        const auto net = tumbleweed::Network::load(argc < 2 ? "net.bin" : argv[1]);
+        std::ifstream in(argc < 3 ? "test_vectors.bin" : argv[2], std::ios::binary);
         std::vector<unsigned char> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         if (d.size() < 8 || std::string(d.begin(), d.begin() + 4) != "TWTV") {
             std::fprintf(stderr, "bad test vector file\n");

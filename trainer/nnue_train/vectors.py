@@ -7,7 +7,7 @@ Little-endian layout:
     u32    count
     u8     boards[count][91]
     u8     stm[count]
-    i32    expected_eval[count]
+    i32    expected_eval[count]   (player A's view, like Network::evaluate)
 """
 
 import argparse
@@ -34,7 +34,8 @@ def main() -> None:
 
     net = read_net(args.net)
     pos = MockEngine(seed=args.seed).sample_positions(args.count)
-    evals = evaluate_int(net, pos.boards, pos.stm).astype("<i4")
+    stm_view = evaluate_int(net, pos.boards, pos.stm)
+    evals = np.where(pos.stm == 0, stm_view, -stm_view).astype("<i4")
     with open(args.out, "wb") as f:
         f.write(struct.pack("<4sI", b"TWTV", args.count))
         f.write(pos.boards.astype(np.uint8).tobytes())

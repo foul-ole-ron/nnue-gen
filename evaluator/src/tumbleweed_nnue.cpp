@@ -95,8 +95,13 @@ int Network::output(const EvalState& s) const {
     return static_cast<int>(out * kScale / (kQA * kQB));  // truncates toward zero
 }
 
+int Network::scoreForA(const EvalState& s) const {
+    const int score = output(s);
+    return s.sideToMove == 0 ? score : -score;
+}
+
 int Network::evaluate(const Board& board, int sideToMove) const {
-    return output(initState(board, sideToMove));
+    return scoreForA(initState(board, sideToMove));
 }
 
 int Network::applyMove(EvalState& s, const Move& move) const {
@@ -116,8 +121,7 @@ int Network::applyMove(EvalState& s, const Move& move) const {
         s.board[move.hex] = move.value;
     }
     s.sideToMove = 1 - s.sideToMove;
-    const int score = output(s);
-    return s.sideToMove == 0 ? score : -score;
+    return scoreForA(s);
 }
 
 }  // namespace tumbleweed

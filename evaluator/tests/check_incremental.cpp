@@ -11,14 +11,10 @@
 #include "tumbleweed_nnue.hpp"
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::fprintf(stderr, "usage: %s <net.bin> <test_vectors.bin>\n", argv[0]);
-        return 2;
-    }
     using namespace tumbleweed;
     try {
-        const auto net = Network::load(argv[1]);
-        std::ifstream in(argv[2], std::ios::binary);
+        const auto net = Network::load(argc < 2 ? "net.bin" : argv[1]);
+        std::ifstream in(argc < 3 ? "test_vectors.bin" : argv[2], std::ios::binary);
         std::vector<unsigned char> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         if (d.size() < 8 || std::string(d.begin(), d.begin() + 4) != "TWTV") {
             std::fprintf(stderr, "bad test vector file\n");
@@ -43,8 +39,7 @@ int main(int argc, char** argv) {
                 const Move m = passDist(rng) == 0 ? Move{kPass, 0}
                                                   : Move{hexDist(rng), static_cast<uint8_t>(valueDist(rng))};
                 const int got = net.applyMove(s, m);
-                const int full = net.evaluate(s.board, s.sideToMove);
-                const int expected = s.sideToMove == 0 ? full : -full;
+                const int expected = net.evaluate(s.board, s.sideToMove);
                 const EvalState fresh = net.initState(s.board, s.sideToMove);
                 ++checks;
                 if ((got != expected || fresh.acc != s.acc) && failures++ < 10) {

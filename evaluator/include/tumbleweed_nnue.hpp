@@ -42,14 +42,14 @@ public:
     // Throws std::runtime_error on a missing, malformed or mismatched file.
     static Network load(const std::string& path);
 
-    // Score from the side to move's view (0 = A, 1 = B); kScale ~ logit 1.
-    // Throws std::invalid_argument on out-of-range cell values or side.
+    // Score always from player A's view, given the side to move (0 = A, 1 = B);
+    // kScale ~ logit 1. Throws std::invalid_argument on out-of-range cell values or side.
     int evaluate(const Board& board, int sideToMove) const;
 
     // Full accumulator refresh. Same validation as evaluate.
     EvalState initState(const Board& board, int sideToMove) const;
 
-    // Score of a state from its side to move's view.
+    // Raw network output: score of a state from its side to move's view.
     int output(const EvalState& state) const;
 
     // Updates only the changed features, flips the side to move, and returns
@@ -58,6 +58,9 @@ public:
     int applyMove(EvalState& state, const Move& move) const;
 
 private:
+    // output(state) converted to player A's view.
+    int scoreForA(const EvalState& state) const;
+
     // Feature-transformer row for a cell seen by `player`, or nullptr for empty.
     const int16_t* featureRow(int hex, int value, int player) const;
 
