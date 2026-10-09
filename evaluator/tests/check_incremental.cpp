@@ -1,4 +1,4 @@
-// Usage: check_incremental <net.bin> <test_vectors.bin>
+// Usage: check_incremental [net.bin] [test_vectors.bin]   (defaults: net.bin, test_vectors.bin)
 // Plays random moves from the test-vector boards and checks that applyMove
 // matches a full refresh after every ply.
 #include <cstdio>

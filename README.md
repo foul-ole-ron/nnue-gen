@@ -2,7 +2,7 @@
 Learning moments 10/26: generate NNUE for Tumbleweed
 
 # Plan
-Use Claude Code to generate a smell project from scratch. I decided to make a hobby project benefit from this and learn about implementation of [NNUE game board evaluation](https://chessprogramming.org/NNUE) in the process.
+Use Claude Code to generate a small project from scratch. I decided to make a hobby project benefit from this and learn about implementation of [NNUE game board evaluation](https://chessprogramming.org/NNUE) in the process.
 Claude's input is shown below (initial CLAUDE.md)
 
 # Outcome

@@ -1,4 +1,4 @@
-// Usage: check_vectors <net.bin> <test_vectors.bin>
+// Usage: check_vectors [net.bin] [test_vectors.bin]   (defaults: net.bin, test_vectors.bin)
 // Test-vector layout is documented in trainer/nnue_train/vectors.py.
 #include <cstdio>
 #include <exception>
