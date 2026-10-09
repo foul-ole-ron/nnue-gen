@@ -70,7 +70,7 @@ int Network::evaluate(const Board& board, int sideToMove) const {
         for (int j = 0; j < kHidden; ++j) acc[view][j] = b1_[j];
         for (int hex = 0; hex < kNumHexes; ++hex) {
             const int v = board[hex];
-            if (v < 0 || v > 13) throw std::invalid_argument("board value out of range 0..13");
+            if (v > 13) throw std::invalid_argument("board value out of range 0..13");
             const int slot = kSlotTable[perspective][v];
             if (slot < 0) continue;
             const int16_t* row = &w1_[size_t(hex * kSlotsPerHex + slot) * kHidden];

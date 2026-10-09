@@ -18,7 +18,7 @@ constexpr int kScale = 400;
 
 // Board cell values: 0 = empty, 1-6 = player A height 1-6,
 // 7-12 = player B height 1-6, 13 = neutral stack.
-using Board = std::array<int, kNumHexes>;
+using Board = std::array<uint8_t, kNumHexes>;
 
 class Network {
 public:
