@@ -10,3 +10,6 @@ target_include_directories(tumbleweed_nnue PUBLIC include)
 
 add_executable(check_vectors tests/check_vectors.cpp)
 target_link_libraries(check_vectors PRIVATE tumbleweed_nnue)
+
+add_executable(check_incremental tests/check_incremental.cpp)
+target_link_libraries(check_incremental PRIVATE tumbleweed_nnue)

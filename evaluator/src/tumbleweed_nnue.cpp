@@ -60,31 +60,64 @@ Network Network::load(const std::string& path) {
     return net;
 }
 
-int Network::evaluate(const Board& board, int sideToMove) const {
+const int16_t* Network::featureRow(int hex, int value, int player) const {
+    const int slot = kSlotTable[player][value];
+    return slot < 0 ? nullptr : &w1_[size_t(hex * kSlotsPerHex + slot) * kHidden];
+}
+
+EvalState Network::initState(const Board& board, int sideToMove) const {
     if (sideToMove != 0 && sideToMove != 1) throw std::invalid_argument("sideToMove must be 0 or 1");
 
-    std::array<int32_t, kHidden> acc[2];  // [0] side to move, [1] other side
-    for (int view = 0; view < 2; ++view) {
-        const int perspective = view == 0 ? sideToMove : 1 - sideToMove;
-        acc[view].fill(0);
-        for (int j = 0; j < kHidden; ++j) acc[view][j] = b1_[j];
+    EvalState s;
+    s.board = board;
+    s.sideToMove = sideToMove;
+    for (int player = 0; player < 2; ++player) {
+        auto& acc = s.acc[player];
+        std::copy(b1_.begin(), b1_.end(), acc.begin());
         for (int hex = 0; hex < kNumHexes; ++hex) {
-            const int v = board[hex];
-            if (v > 13) throw std::invalid_argument("board value out of range 0..13");
-            const int slot = kSlotTable[perspective][v];
-            if (slot < 0) continue;
-            const int16_t* row = &w1_[size_t(hex * kSlotsPerHex + slot) * kHidden];
-            for (int j = 0; j < kHidden; ++j) acc[view][j] += row[j];
+            if (board[hex] > 13) throw std::invalid_argument("board value out of range 0..13");
+            if (const int16_t* row = featureRow(hex, board[hex], player)) {
+                for (int j = 0; j < kHidden; ++j) acc[j] += row[j];
+            }
         }
     }
+    return s;
+}
 
+int Network::output(const EvalState& s) const {
+    const auto& accStm = s.acc[s.sideToMove];
+    const auto& accNstm = s.acc[1 - s.sideToMove];
     int64_t out = b2_;
-    for (int view = 0; view < 2; ++view) {
-        for (int j = 0; j < kHidden; ++j) {
-            out += int64_t(std::clamp(acc[view][j], 0, kQA)) * w2_[view * kHidden + j];
-        }
+    for (int j = 0; j < kHidden; ++j) {
+        out += int64_t(std::clamp(accStm[j], 0, kQA)) * w2_[j];
+        out += int64_t(std::clamp(accNstm[j], 0, kQA)) * w2_[kHidden + j];
     }
     return static_cast<int>(out * kScale / (kQA * kQB));  // truncates toward zero
+}
+
+int Network::evaluate(const Board& board, int sideToMove) const {
+    return output(initState(board, sideToMove));
+}
+
+int Network::applyMove(EvalState& s, const Move& move) const {
+    if (move.hex != kPass) {
+        if (move.hex < 0 || move.hex >= kNumHexes) throw std::invalid_argument("move hex out of range");
+        if (move.value > 13) throw std::invalid_argument("move value out of range 0..13");
+        const int oldValue = s.board[move.hex];
+        for (int player = 0; player < 2; ++player) {
+            auto& acc = s.acc[player];
+            if (const int16_t* row = featureRow(move.hex, oldValue, player)) {
+                for (int j = 0; j < kHidden; ++j) acc[j] -= row[j];
+            }
+            if (const int16_t* row = featureRow(move.hex, move.value, player)) {
+                for (int j = 0; j < kHidden; ++j) acc[j] += row[j];
+            }
+        }
+        s.board[move.hex] = move.value;
+    }
+    s.sideToMove = 1 - s.sideToMove;
+    const int score = output(s);
+    return s.sideToMove == 0 ? score : -score;
 }
 
 }  // namespace tumbleweed

@@ -25,7 +25,8 @@ uv run python -m nnue_train.vectors --net ../net.bin --out ../test_vectors.bin
 # Evaluator (run from repo root; CMake ships with VS Build Tools, not on PATH)
 cmake -S evaluator -B build
 cmake --build build --config Release
-build/Release/check_vectors net.bin test_vectors.bin   # must print N/N vectors match
+build/Release/check_vectors net.bin test_vectors.bin       # must print N/N vectors match
+build/Release/check_incremental net.bin test_vectors.bin   # applyMove vs full refresh
 ```
 
 ## Architecture
@@ -34,6 +35,7 @@ build/Release/check_vectors net.bin test_vectors.bin   # must print N/N vectors 
 - **Inputs:** 1183 = 91 hexes × 13 slots, index `hex*13 + slot`, seen from one player's perspective: slots 0–5 own, 6–11 opponent, 12 neutral. Mapping table `SLOT_TABLE` / `kSlotTable`.
 - **Network:** shared `W1[1183][64]`, `b1[64]` → two accumulators (side to move, other side) → concat 128 → clipped ReLU [0,1] → `W2[128]`, `b2` → scalar.
 - **Quantization:** int16, QA=255 (W1, b1), QB=64 (W2), b2 at QA·QB, eval = out·400/(QA·QB) truncated toward zero. Training clamps weights to ±1.98 so int16 never overflows.
+- **Incremental eval (C++ only):** `EvalState` keeps one accumulator per player (A view, B view), so moves never swap them. `applyMove` subtracts the old cell's row and adds the new one, flips the side to move and returns the score **from A's view**; `evaluate`/`output` return it from the side to move's view. Undo by copying `EvalState`.
 - **Objective:** win first, occupied-area margin second. Target `t = 0.5 + 0.5·((1−λ)·r + λ·m/91)` from the side to move's view; loss = MSE(sigmoid(o), t). A real engine plugs in via the `Engine` protocol in `trainer/nnue_train/engine.py` (result and margin given from A's view).
 
 ### Python ↔ C++ contract
