@@ -2,30 +2,48 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status
-
-No application code exists yet. Present a proposed implementation plan and ask about important missing requirements before creating application files. Once code exists, add build, test, and run commands to this file.
-
 ## Project goal
 
-A training framework for an NNUE that evaluates positions in the board game **Tumbleweed**. No real game-playing program is needed; stub or mock it.
+A training framework for an NNUE that evaluates positions in the board game **Tumbleweed**. There is no real game-playing program yet; `MockEngine` stands in for it.
 
-- Hexagonal board with 91 hexes. Players A and B place stacks of height 1–6 on hexes.
+- Hexagonal board with 91 hexes. Players A and B place stacks of height 1–6; a neutral stack starts in the centre (hex 45).
 - NNUE background: https://chessprogramming.org/NNUE
+- Keep it simple: no input buckets, output buckets, or other advanced techniques.
 
-## Network architecture (fixed requirements)
+## Commands
 
-- **Inputs:** 1092 sparse features (91 hexes × 12 stack types: player A or B × height 1–6). Empty hexes have no active feature.
-- **Accumulators:** two, one per player (perspective), 64 nodes each.
-- **Quantization:** all weights and biases are 16-bit integers.
-- **Keep it simple:** no input buckets, output buckets, or other advanced techniques from the chessprogramming page.
+`uv` is installed via pip, so invoke it as `py -3.14 -m uv` if `uv` is not on PATH.
 
-## Components
+```sh
+# Trainer (run from trainer/)
+uv sync
+uv run pytest                                   # all tests
+uv run pytest tests/test_nnue.py::test_netfile_round_trip   # single test
+uv run python -m nnue_train.train --steps 2000 --out ../net.bin [--lambda 0.1]
+uv run python -m nnue_train.vectors --net ../net.bin --out ../test_vectors.bin
 
-The two programs share one binary network file, so the file format is the contract between them. Any change must be made on both sides.
+# Evaluator (run from repo root; CMake ships with VS Build Tools, not on PATH)
+cmake -S evaluator -B build
+cmake --build build --config Release
+build/Release/check_vectors net.bin test_vectors.bin   # must print N/N vectors match
+```
 
-1. **Trainer (Python):** trains the NNUE against data from the mocked game program and writes the network to the binary file periodically during training. The format must be easy to read from both Python and C++.
-   - Python 3.14 with numpy. Use TensorFlow only if truly needed; avoid it if possible.
-   - Use `uv` for dependencies and environments.
-2. **Evaluator (C++):** a function that loads the binary network and evaluates a board given as an array of 91 integers.
-   - C++17 with STL only. No third-party libraries.
+## Architecture
+
+- **Board encoding:** 91 unsigned ints. 0 = empty, 1–6 = A height 1–6, 7–12 = B height 1–6, 13 = neutral.
+- **Inputs:** 1183 = 91 hexes × 13 slots, index `hex*13 + slot`, seen from one player's perspective: slots 0–5 own, 6–11 opponent, 12 neutral. Mapping table `SLOT_TABLE` / `kSlotTable`.
+- **Network:** shared `W1[1183][64]`, `b1[64]` → two accumulators (side to move, other side) → concat 128 → clipped ReLU [0,1] → `W2[128]`, `b2` → scalar.
+- **Quantization:** int16, QA=255 (W1, b1), QB=64 (W2), b2 at QA·QB, eval = out·400/(QA·QB) truncated toward zero. Training clamps weights to ±1.98 so int16 never overflows.
+- **Objective:** win first, occupied-area margin second. Target `t = 0.5 + 0.5·((1−λ)·r + λ·m/91)` from the side to move's view; loss = MSE(sigmoid(o), t). A real engine plugs in via the `Engine` protocol in `trainer/nnue_train/engine.py` (result and margin given from A's view).
+
+### Python ↔ C++ contract
+
+These must change together, or `check_vectors` fails:
+- Binary net format: `trainer/nnue_train/netfile.py` ↔ `Network::load` in `evaluator/src/tumbleweed_nnue.cpp` (layout documented in `netfile.py`; header carries version, dimensions and quantization constants).
+- Feature mapping: `features.py` `SLOT_TABLE` ↔ `kSlotTable`.
+- Integer eval: `quantize.py` `evaluate_int` is the bit-exact reference for `Network::evaluate`.
+
+### Tech constraints
+
+- Trainer: Python 3.14, numpy only (manual backprop + Adam in `model.py`; no TensorFlow). Use `logging`, not `print`.
+- Evaluator: C++17 with STL only, no third-party libraries.

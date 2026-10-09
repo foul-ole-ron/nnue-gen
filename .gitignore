@@ -69,3 +69,10 @@ Testing/
 
 # IDE stuff
 .idea/
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+
+# Generated networks and test vectors
+*.bin
