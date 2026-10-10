@@ -3,9 +3,10 @@
 Board: 91 unsigned cells. 0 = empty, 1-6 = player A height 1-6,
 7-12 = player B height 1-6, 13 = neutral stack.
 
-Feature index for a perspective: hex * 13 + slot, where slot 0-5 = own
-height 1-6, 6-11 = opponent height 1-6, 12 = neutral. Empty hexes have
-no feature. Must match evaluator/src/tumbleweed_nnue.cpp.
+Feature index for a perspective: slot * 91 + hex, where slot 0-5 = own
+height 1-6, 6-11 = opponent height 1-6, 12 = neutral. From A's view
+slot = cell - 1; B's view swaps own and opponent. Empty hexes have no
+feature. Must match evaluator/src/tumbleweed_nnue.cpp.
 """
 
 import numpy as np
@@ -19,15 +20,6 @@ CENTRE_HEX = 45
 PLAYER_A = 0
 PLAYER_B = 1
 
-# SLOT_TABLE[perspective][cell value] -> slot, or -1 for empty.
-SLOT_TABLE = np.array(
-    [
-        [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-        [-1, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 12],
-    ],
-    dtype=np.int32,
-)
-
 
 def feature_indices(boards: np.ndarray, perspective: np.ndarray) -> np.ndarray:
     """Return (N, 91) feature indices for each board seen by `perspective`; -1 marks empty."""
@@ -37,9 +29,10 @@ def feature_indices(boards: np.ndarray, perspective: np.ndarray) -> np.ndarray:
         raise ValueError(f"boards must have shape (N, {NUM_HEXES})")
     if boards.min(initial=0) < 0 or boards.max(initial=0) > NEUTRAL:
         raise ValueError("board values must be in 0..13")
-    slots = SLOT_TABLE[perspective[:, None], boards]
-    hex_base = np.arange(NUM_HEXES, dtype=np.int32) * SLOTS_PER_HEX
-    return np.where(slots >= 0, hex_base + slots, -1)
+    slots = boards - 1
+    swap = (perspective[:, None] == PLAYER_B) & (slots < 12)
+    slots = np.where(swap, (slots + 6) % 12, slots)
+    return np.where(boards > 0, slots * NUM_HEXES + np.arange(NUM_HEXES, dtype=np.int32), -1)
 
 
 def one_hot(indices: np.ndarray) -> np.ndarray:

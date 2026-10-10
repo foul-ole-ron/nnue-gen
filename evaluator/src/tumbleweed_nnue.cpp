@@ -10,15 +10,8 @@ namespace tumbleweed {
 namespace {
 
 constexpr char kMagic[4] = {'T', 'W', 'N', 'N'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 constexpr size_t kHeaderSize = 4 + 6 * 4;
-
-// kSlotTable[perspective][cell] -> slot (0-5 own, 6-11 opponent, 12 neutral), -1 = empty.
-// Must match SLOT_TABLE in trainer/nnue_train/features.py.
-constexpr int kSlotTable[2][14] = {
-    {-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
-    {-1, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 12},
-};
 
 uint32_t readU32(const unsigned char* p) {
     return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
@@ -61,8 +54,12 @@ Network Network::load(const std::string& path) {
 }
 
 const int16_t* Network::featureRow(int hex, int value, int player) const {
-    const int slot = kSlotTable[player][value];
-    return slot < 0 ? nullptr : &w1_[size_t(hex * kSlotsPerHex + slot) * kHidden];
+    // Feature index slot * 91 + hex; slot 0-5 own, 6-11 opponent, 12 neutral.
+    // Must match feature_indices in trainer/nnue_train/features.py.
+    if (value == 0) return nullptr;
+    int slot = value - 1;  // A's view
+    if (player == 1 && slot < 12) slot = (slot + 6) % 12;
+    return &w1_[size_t(slot * kNumHexes + hex) * kHidden];
 }
 
 EvalState Network::initState(const Board& board, int sideToMove) const {

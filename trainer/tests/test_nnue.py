@@ -15,8 +15,8 @@ def test_feature_mapping_both_perspectives():
     board[0, CENTRE_HEX] = NEUTRAL
     a = feature_indices(board, np.array([PLAYER_A]))[0]
     b = feature_indices(board, np.array([PLAYER_B]))[0]
-    assert (a[0], a[1], a[CENTRE_HEX]) == (0, 13 + 11, CENTRE_HEX * 13 + 12)
-    assert (b[0], b[1], b[CENTRE_HEX]) == (6, 13 + 5, CENTRE_HEX * 13 + 12)
+    assert (a[0], a[1], a[CENTRE_HEX]) == (0, 11 * 91 + 1, 12 * 91 + CENTRE_HEX)
+    assert (b[0], b[1], b[CENTRE_HEX]) == (6 * 91, 5 * 91 + 1, 12 * 91 + CENTRE_HEX)
     assert (a[2:CENTRE_HEX] == -1).all() and (b[2:CENTRE_HEX] == -1).all()
 
 

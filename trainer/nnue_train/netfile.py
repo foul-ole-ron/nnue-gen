@@ -20,7 +20,7 @@ from nnue_train.model import HIDDEN
 from nnue_train.quantize import QA, QB, SCALE, QuantizedNet
 
 MAGIC = b"TWNN"
-VERSION = 1
+VERSION = 2
 HEADER = struct.Struct("<4s6I")
 I16 = np.dtype("<i2")
 
