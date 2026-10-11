@@ -5,7 +5,7 @@ import pytest
 
 from nnue_train import board as bd
 from nnue_train.board import (
-    COORDS, LOCAL_HEIGHT, LOCAL_JOINT_LOS, LOCAL_OPP_LOS, LOCAL_OWN_LOS, LOCAL_OWNER, NUM_LOCAL, NUM_LOCAL_SCALED,
+    COORDS, LOCAL_CORNER, LOCAL_HEIGHT, LOCAL_JOINT_LOS, LOCAL_RING, LOCAL_OPP_LOS, LOCAL_OWN_LOS, LOCAL_OWNER, NUM_LOCAL, NUM_LOCAL_SCALED,
     NUM_MOVES, PASS_MOVE, RAYS, SYMMETRIES, augment, legal_mask, los_counts, policy_inputs,
 )
 from nnue_train.engine import MockEngine, targets
@@ -132,18 +132,31 @@ def test_local_feature_layout():
     assert legal[0, CENTRE_HEX]
     want = np.zeros(NUM_LOCAL)
     want[:NUM_LOCAL_SCALED] = [2 / 6, 0, 1 / 6]
-    want[[LOCAL_OWN_LOS + 2, LOCAL_OPP_LOS + 0, LOCAL_HEIGHT + 1, LOCAL_OWNER + 2, LOCAL_JOINT_LOS + 2 * 7 + 0]] = 1
+    want[[LOCAL_OWN_LOS + 2, LOCAL_OPP_LOS + 0, LOCAL_HEIGHT + 1, LOCAL_OWNER + 2, LOCAL_JOINT_LOS + 2 * 7 + 0,
+          LOCAL_RING + 0]] = 1
     assert local[0, CENTRE_HEX].tolist() == pytest.approx(want.tolist())
+
+
+def test_ring_and_corner_features():
+    local, _ = policy_inputs(np.zeros((1, NUM_HEXES), dtype=np.uint8), np.array([PLAYER_A]))
+    ring = local[0, :, LOCAL_RING:LOCAL_CORNER].argmax(axis=-1)
+    assert np.bincount(ring).tolist() == [1, 6, 12, 18, 24, 30]
+    assert ring[CENTRE_HEX] == 0 and ring[hex_at(0, -5)] == 5 and ring[hex_at(2, -1)] == 2
+    corners = np.flatnonzero(local[0, :, LOCAL_CORNER])
+    assert sorted(corners.tolist()) == sorted(hex_at(q, r) for q, r in
+                                              [(5, 0), (0, 5), (-5, 5), (-5, 0), (0, -5), (5, -5)])
+    for perm in SYMMETRIES:  # symmetric hexes get identical position features
+        assert np.array_equal(local[0, perm, LOCAL_RING:], local[0, :, LOCAL_RING:])
 
 
 def test_each_one_hot_group_has_one_slot_set():
     pos = MockEngine(seed=26).sample_positions(64)
     local, _ = policy_inputs(pos.boards, pos.stm)
-    groups = [LOCAL_OWN_LOS, LOCAL_OPP_LOS, LOCAL_HEIGHT, LOCAL_OWNER, LOCAL_JOINT_LOS, NUM_LOCAL]
+    groups = [LOCAL_OWN_LOS, LOCAL_OPP_LOS, LOCAL_HEIGHT, LOCAL_OWNER, LOCAL_JOINT_LOS, LOCAL_RING, LOCAL_CORNER]
     for start, end in zip(groups, groups[1:]):
         assert (local[..., start:end].sum(axis=-1) == 1).all()
         assert set(np.unique(local[..., start:end])) <= {0.0, 1.0}
-    joint = local[..., LOCAL_JOINT_LOS:].argmax(axis=-1)
+    joint = local[..., LOCAL_JOINT_LOS:LOCAL_RING].argmax(axis=-1)
     own = local[..., LOCAL_OWN_LOS:LOCAL_OPP_LOS].argmax(axis=-1)
     opp = local[..., LOCAL_OPP_LOS:LOCAL_HEIGHT].argmax(axis=-1)
     assert np.array_equal(joint, own * 7 + opp)
@@ -176,7 +189,7 @@ def test_policy_gradients_match_numerical():
     probes = [("w1", (active, 3)), ("b1", (5,)), ("wg", (3, 2)), ("wg", (100, 7)), ("bg", (4,)),
               ("m1", (1, 3)), ("m1", (LOCAL_OWN_LOS + 1, 5)), ("m1", (LOCAL_OWNER + 0, 2)),
               ("m1", (LOCAL_JOINT_LOS + 7, 4)), ("m1", (NUM_LOCAL + 5, 6)), ("mb1", (2,)), ("m2", (6,)), ("mb2", (0,)),
-              ("cell_bias", (CENTRE_HEX,)), ("wpass", (9,)), ("bpass", (0,))]
+              ("m1", (LOCAL_RING + 5, 1)), ("m1", (LOCAL_CORNER, 3)), ("wpass", (9,)), ("bpass", (0,))]
     for name, idx in probes:
         arr = getattr(p, name)
         orig = arr[idx]
@@ -214,7 +227,7 @@ def test_mock_policy_and_softmax_respect_legality():
 
 def test_netfile_round_trip_with_policy(tmp_path):
     p = Params.init(np.random.default_rng(20))
-    p.cell_bias[:] = np.linspace(-1, 1, NUM_HEXES)
+    p.m2[:] = np.linspace(-1, 1, len(p.m2))
     net = quantize(p)
     path = tmp_path / "net.bin"
     write_net(net, path)

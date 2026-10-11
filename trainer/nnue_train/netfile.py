@@ -13,7 +13,6 @@ Little-endian layout:
     f32    mb1[policy_hidden]
     f32    m2[policy_hidden]
     f32    mb2
-    f32    cell_bias[n_moves - 1]
     f32    wpass[2 * hidden]
     f32    bpass
 """
@@ -30,7 +29,7 @@ from nnue_train.model import HIDDEN, POLICY_CONTEXT, POLICY_HIDDEN, POLICY_NAMES
 from nnue_train.quantize import QA, QB, SCALE, QuantizedNet
 
 MAGIC = b"TWNN"
-VERSION = 4
+VERSION = 5
 HEADER = struct.Struct("<4s10I")
 I16 = np.dtype("<i2")
 F32 = np.dtype("<f4")
@@ -43,7 +42,6 @@ POLICY_SHAPES = {
     "mb1": (POLICY_HIDDEN,),
     "m2": (POLICY_HIDDEN,),
     "mb2": (1,),
-    "cell_bias": (NUM_MOVES - 1,),
     "wpass": (2 * HIDDEN,),
     "bpass": (1,),
 }

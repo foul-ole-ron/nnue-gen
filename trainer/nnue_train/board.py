@@ -32,7 +32,9 @@ LOCAL_OPP_LOS = 10  # one-hot opponent LOS 0..6
 LOCAL_HEIGHT = 17  # one-hot stack height 0..6 (neutral = NEUTRAL_HEIGHT)
 LOCAL_OWNER = 24  # one-hot owner: empty, own, opponent, neutral
 LOCAL_JOINT_LOS = 28  # one-hot (own LOS, opponent LOS) at own * 7 + opp
-NUM_LOCAL = 77
+LOCAL_RING = 77  # one-hot distance from the centre 0..5
+LOCAL_CORNER = 83  # 1 on the 6 corner hexes (they are seen from only 3 directions)
+NUM_LOCAL = 84
 NUM_LOCAL_SCALED = 3  # own LOS / 6, opponent LOS / 6, height / 6
 
 EMPTY = -1
@@ -78,6 +80,7 @@ def _symmetries() -> np.ndarray:
 
 RAYS = _rays()  # (91, 6, MAX_RAY) hexes seen from each hex per direction, nearest first; -1 pads
 SYMMETRIES = _symmetries()  # (12, 91) hex i maps to SYMMETRIES[k, i]
+IS_CORNER = (RAYS[:, :, 0] >= 0).sum(axis=1) == 3
 
 
 def _check(boards: np.ndarray) -> np.ndarray:
@@ -133,11 +136,13 @@ def policy_inputs(boards: np.ndarray, stm: np.ndarray, dtype=np.float32) -> tupl
             LOCAL_OPP_LOS + opp_los,
             LOCAL_HEIGHT + heights,
             LOCAL_OWNER + owner_slot,
-            LOCAL_JOINT_LOS + own_los * 7 + opp_los,  # own + opp <= 6, so this stays below NUM_LOCAL
+            LOCAL_JOINT_LOS + own_los * 7 + opp_los,  # own + opp <= 6, so this stays inside the group
+            np.broadcast_to(LOCAL_RING + CENTRE_DISTANCE, own_los.shape),
         ],
         axis=-1,
     )
     np.put_along_axis(local, hot, 1.0, axis=-1)
+    local[..., LOCAL_CORNER] = IS_CORNER
     legal = np.concatenate([can_place, np.ones((len(stm), 1), dtype=bool)], axis=1)
     return local, legal
 

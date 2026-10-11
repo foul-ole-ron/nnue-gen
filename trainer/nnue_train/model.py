@@ -13,7 +13,7 @@ POLICY_HIDDEN = 16
 WEIGHT_CLAMP = 1.98  # keeps quantized weights and b2 inside int16
 
 VALUE_NAMES = ("w1", "b1", "w2", "b2")
-POLICY_NAMES = ("wg", "bg", "m1", "mb1", "m2", "mb2", "cell_bias", "wpass", "bpass")
+POLICY_NAMES = ("wg", "bg", "m1", "mb1", "m2", "mb2", "wpass", "bpass")
 
 
 @dataclass
@@ -29,7 +29,6 @@ class Params:
     mb1: np.ndarray  # (POLICY_HIDDEN,)
     m2: np.ndarray  # (POLICY_HIDDEN,)
     mb2: np.ndarray  # (1,)
-    cell_bias: np.ndarray  # (NUM_HEXES,) positional prior
     wpass: np.ndarray  # (2 * HIDDEN,) pass logit = h @ wpass + bpass
     bpass: np.ndarray  # (1,)
 
@@ -48,7 +47,6 @@ class Params:
             mb1=np.full(POLICY_HIDDEN, 0.25, dtype=np.float32),
             m2=rng.normal(0.0, 1.0 / np.sqrt(POLICY_HIDDEN), POLICY_HIDDEN).astype(np.float32),
             mb2=np.zeros(1, dtype=np.float32),
-            cell_bias=np.zeros(NUM_HEXES, dtype=np.float32),
             wpass=rng.normal(0.0, 1.0 / np.sqrt(2 * HIDDEN), 2 * HIDDEN).astype(np.float32),
             bpass=np.zeros(1, dtype=np.float32),
         )
@@ -106,7 +104,7 @@ def policy_forward(p, h: np.ndarray, local: np.ndarray, legal: np.ndarray) -> tu
     g = np.clip(zg, 0.0, 1.0)
     z1 = local @ p.m1[:NUM_LOCAL] + (g @ p.m1[NUM_LOCAL:])[:, None, :] + p.mb1
     a1 = np.clip(z1, 0.0, 1.0)
-    cells = a1 @ p.m2 + p.mb2[0] + p.cell_bias
+    cells = a1 @ p.m2 + p.mb2[0]
     pass_logit = h @ p.wpass + p.bpass[0]
     logits = np.where(legal, np.concatenate([cells, pass_logit[:, None]], axis=1), -np.inf)
     return logits, {"zg": zg, "g": g, "z1": z1, "a1": a1}
@@ -146,7 +144,6 @@ def _policy_backward(
         "mb1": d_z1_cells.sum(axis=0),
         "m2": c["a1"].reshape(-1, POLICY_HIDDEN).T @ d_cells.ravel(),
         "mb2": np.array([d_cells.sum()]),
-        "cell_bias": d_cells.sum(axis=0),
         "wpass": h.T @ d_pass,
         "bpass": np.array([d_pass.sum()]),
     }

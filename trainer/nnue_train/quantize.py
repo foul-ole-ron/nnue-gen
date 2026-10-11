@@ -32,7 +32,6 @@ class QuantizedNet:
     mb1: np.ndarray
     m2: np.ndarray
     mb2: np.ndarray
-    cell_bias: np.ndarray
     wpass: np.ndarray
     bpass: np.ndarray
 

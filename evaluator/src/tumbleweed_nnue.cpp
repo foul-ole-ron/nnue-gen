@@ -13,13 +13,13 @@ namespace tumbleweed {
 namespace {
 
 constexpr char kMagic[4] = {'T', 'W', 'N', 'N'};
-constexpr uint32_t kVersion = 4;
+constexpr uint32_t kVersion = 5;
 constexpr size_t kHeaderFields = 10;
 constexpr size_t kHeaderSize = 4 + kHeaderFields * 4;
 constexpr size_t kNumI16 = size_t(kNumFeatures) * kHidden + kHidden + 2 * kHidden + 1;
 constexpr size_t kNumF32 = 2 * kHidden * kPolicyContext + kPolicyContext +
                            (kLocalFeatures + kPolicyContext) * kPolicyHidden + kPolicyHidden + kPolicyHidden + 1 +
-                           kNumHexes + 2 * kHidden + 1;
+                           2 * kHidden + 1;
 
 uint32_t readU32(const unsigned char* p) {
     return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
@@ -47,11 +47,15 @@ constexpr int kRadius = 5;
 constexpr int kMaxRay = 2 * kRadius;
 constexpr int kDirections[6][2] = {{1, 0}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}, {0, 1}};
 
-// rays[hex][dir]: hexes seen from `hex` in that direction, nearest first; -1 ends the ray.
-using Rays = std::array<std::array<std::array<int, kMaxRay>, 6>, kNumHexes>;
+struct Geometry {
+    // rays[hex][dir]: hexes seen from `hex` in that direction, nearest first; -1 ends the ray.
+    std::array<std::array<std::array<int, kMaxRay>, 6>, kNumHexes> rays;
+    std::array<int, kNumHexes> ring;      // distance from the centre, 0..5
+    std::array<bool, kNumHexes> corner;   // seen from only 3 directions
+};
 
-const Rays& rays() {
-    static const Rays table = [] {
+const Geometry& geometry() {
+    static const Geometry table = [] {
         // Axial (q, r), row by row: r = -5..5, q ascending.
         int index[2 * kRadius + 1][2 * kRadius + 1];
         int coords[kNumHexes][2];
@@ -64,10 +68,13 @@ const Rays& rays() {
                 coords[n][1] = r;
             }
         }
-        Rays t;
+        Geometry t;
         for (int hex = 0; hex < kNumHexes; ++hex) {
+            const int q0 = coords[hex][0], r0 = coords[hex][1];
+            t.ring[hex] = std::max({std::abs(q0), std::abs(r0), std::abs(q0 + r0)});
+            int directions = 0;
             for (int d = 0; d < 6; ++d) {
-                auto& ray = t[hex][d];
+                auto& ray = t.rays[hex][d];
                 ray.fill(-1);
                 int q = coords[hex][0] + kDirections[d][0], r = coords[hex][1] + kDirections[d][1];
                 for (int k = 0; std::abs(q) <= kRadius && std::abs(r) <= kRadius && std::abs(q + r) <= kRadius; ++k) {
@@ -75,7 +82,9 @@ const Rays& rays() {
                     q += kDirections[d][0];
                     r += kDirections[d][1];
                 }
+                directions += ray[0] >= 0;
             }
+            t.corner[hex] = directions == 3;
         }
         return t;
     }();
@@ -95,7 +104,7 @@ struct Sight {
 
 Sight lineOfSight(const Board& board, int hex, int player) {
     Sight s;
-    for (const auto& ray : rays()[hex]) {
+    for (const auto& ray : geometry().rays[hex]) {
         for (int h : ray) {
             if (h < 0) break;
             if (board[h] == 0) continue;
@@ -143,7 +152,6 @@ Network Network::load(const std::string& path) {
     net.mb1_ = readF32(p, kPolicyHidden);
     net.m2_ = readF32(p, kPolicyHidden);
     net.mb2_ = readF32(p, 1)[0];
-    net.cellBias_ = readF32(p, kNumHexes);
     net.wpass_ = readF32(p, 2 * kHidden);
     net.bpass_ = readF32(p, 1)[0];
     return net;
@@ -265,13 +273,16 @@ PolicyValues Network::policyLogits(const EvalState& s) const {
         const double scaled[kLocalScaled] = {sight.own / 6.0, sight.opp / 6.0, height / 6.0};
         const int ownerSlot = owner == kEmptyOwner ? 0 : owner == side ? 1 : owner == 1 - side ? 2 : 3;
         // One-hot features: adding their m1 rows equals multiplying by 1.
-        const int hot[5] = {kLocalOwnLos + sight.own, kLocalOppLos + sight.opp, kLocalHeight + height,
-                            kLocalOwner + ownerSlot, kLocalJointLos + sight.own * 7 + sight.opp};
-        double logit = double(mb2_) + cellBias_[hex];
+        const int hot[6] = {kLocalOwnLos + sight.own, kLocalOppLos + sight.opp, kLocalHeight + height,
+                            kLocalOwner + ownerSlot, kLocalJointLos + sight.own * 7 + sight.opp,
+                            kLocalRing + geometry().ring[hex]};
+        const bool corner = geometry().corner[hex];
+        double logit = mb2_;
         for (int k = 0; k < kPolicyHidden; ++k) {
             double z = context[k];
             for (int f = 0; f < kLocalScaled; ++f) z += scaled[f] * m1_[size_t(f) * kPolicyHidden + k];
             for (int row : hot) z += m1_[size_t(row) * kPolicyHidden + k];
+            if (corner) z += m1_[size_t(kLocalCorner) * kPolicyHidden + k];
             logit += std::clamp(z, 0.0, 1.0) * m2_[k];
         }
         logits[hex] = logit;

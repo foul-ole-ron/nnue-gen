@@ -28,7 +28,9 @@ constexpr int kLocalOppLos = 10;    // opponent LOS 0..6
 constexpr int kLocalHeight = 17;    // stack height 0..6
 constexpr int kLocalOwner = 24;     // empty, own, opponent, neutral
 constexpr int kLocalJointLos = 28;  // (own LOS, opponent LOS) at own * 7 + opp
-constexpr int kLocalFeatures = 77;
+constexpr int kLocalRing = 77;      // distance from the centre 0..5
+constexpr int kLocalCorner = 83;    // 1 on the 6 corner hexes
+constexpr int kLocalFeatures = 84;
 constexpr int kPolicyContext = 16;
 constexpr int kPolicyHidden = 16;
 
@@ -110,7 +112,6 @@ private:
     std::vector<float> mb1_;       // [kPolicyHidden]
     std::vector<float> m2_;        // [kPolicyHidden]
     float mb2_ = 0.0f;
-    std::vector<float> cellBias_;  // [kNumHexes]
     std::vector<float> wpass_;     // [2 * kHidden]
     float bpass_ = 0.0f;
 };
