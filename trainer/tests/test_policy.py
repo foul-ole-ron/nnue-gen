@@ -113,6 +113,19 @@ def test_legality_needs_sight_above_current_height():
     assert legal_mask(empty, np.array([PLAYER_A]))[0].sum() == 1 and legal_mask(empty, np.array([0]))[0, PASS_MOVE]
 
 
+def test_suicide_moves_are_illegal():
+    # Centre: seen once by A (east) and twice by B (west, south-east).
+    b = make_board({(1, 0): 1, (-1, 0): 7, (0, 1): 7})
+    assert los_counts(b, np.array([PLAYER_A]))[0, CENTRE_HEX].tolist() == [1, 2]
+    assert not legal_mask(b, np.array([PLAYER_A]))[0, CENTRE_HEX]
+    assert legal_mask(b, np.array([PLAYER_B]))[0, CENTRE_HEX]
+    tie = make_board({(1, 0): 1, (-1, 0): 7})  # equal sight is allowed
+    assert legal_mask(tie, np.array([PLAYER_A]))[0, CENTRE_HEX]
+    pos = MockEngine(seed=27).sample_positions(64)
+    los, legal = los_counts(pos.boards, pos.stm), legal_mask(pos.boards, pos.stm)
+    assert not legal[:, :NUM_HEXES][los[..., 0] < los[..., 1]].any()
+
+
 def test_local_feature_layout():
     b = make_board({(0, 0): 7, (1, 0): 1, (-1, 0): 1})  # B height 1 at centre, seen twice by A
     local, legal = policy_inputs(b, np.array([PLAYER_A]))

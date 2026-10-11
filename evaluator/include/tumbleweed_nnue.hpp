@@ -79,7 +79,8 @@ public:
     int applyMove(EvalState& state, const Move& move) const;
 
     // Legal moves for the side to move: a hex it sees in more directions than the
-    // height of the stack there (empty = 0, neutral = kNeutralHeight), and pass.
+    // height of the stack there (empty = 0, neutral = kNeutralHeight) and in at least
+    // as many directions as the opponent (no suicide moves), and pass.
     // Same validation as evaluate.
     static MoveMask legalMoves(const Board& board, int sideToMove);
 

@@ -108,7 +108,8 @@ Sight lineOfSight(const Board& board, int hex, int player) {
     return s;
 }
 
-bool canPlace(const Sight& s, int value) { return s.own >= 1 && s.own > heightOf(value); }
+// Above the current stack, and not a suicide move (the opponent may not see the hex more often).
+bool canPlace(const Sight& s, int value) { return s.own > heightOf(value) && s.own >= s.opp; }
 
 }  // namespace
 

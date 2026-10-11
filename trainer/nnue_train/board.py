@@ -8,8 +8,10 @@ A move is a hex (the stack height is forced by the rules) or pass, giving
 NUM_MOVES = 92 policy entries with PASS_MOVE = 91. A hex is seen by a player
 in a direction when the nearest stack that way is theirs; the neutral stack
 blocks sight and belongs to nobody. Placing on a hex is legal when the mover
-sees it at least once and more often than the height of the stack already
-there (empty = 0, neutral = NEUTRAL_HEIGHT). Pass is always legal.
+sees it more often than the height of the stack already there (empty = 0,
+neutral = NEUTRAL_HEIGHT) and at least as often as the opponent does, so
+suicide moves (the opponent sees the new stack more often) are illegal.
+Pass is always legal.
 
 Must match evaluator/src/tumbleweed_nnue.cpp.
 """
@@ -118,7 +120,7 @@ def policy_inputs(boards: np.ndarray, stm: np.ndarray, dtype=np.float32) -> tupl
     own_los, opp_los = los[..., 0], los[..., 1]
     owners = cell_owners(boards)
     heights = cell_heights(boards)
-    can_place = (own_los >= 1) & (own_los > heights)
+    can_place = (own_los > heights) & (own_los >= opp_los)
     owner_slot = np.select([owners == EMPTY, owners == stm[:, None], owners == 1 - stm[:, None]], [0, 1, 2], 3)
 
     local = np.zeros(own_los.shape + (NUM_LOCAL,), dtype=dtype)
