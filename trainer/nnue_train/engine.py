@@ -8,6 +8,7 @@ from typing import Protocol
 
 import numpy as np
 
+from nnue_train.board import CENTRE_DISTANCE, EMPTY, PASS_MOVE, RADIUS, cell_owners, legal_mask, los_counts
 from nnue_train.features import CENTRE_HEX, NEUTRAL, NUM_HEXES
 
 
@@ -17,6 +18,9 @@ class Positions:
     stm: np.ndarray  # (N,) uint8, 0 = A, 1 = B
     result: np.ndarray  # (N,) int8, final game result from A's view: +1 win, 0 draw, -1 loss
     margin: np.ndarray  # (N,) int16, final occupied-hex difference (A - B)
+    # (N, NUM_MOVES) move distribution (e.g. MCTS visit counts, normalised) for the side to move;
+    # index = hex, PASS_MOVE = pass; must be 0 on illegal moves. None = no policy training.
+    policy: np.ndarray | None = None
 
 
 class Engine(Protocol):
@@ -31,6 +35,7 @@ class MockEngine:
 
     def __init__(self, seed: int = 0, noise: float = 3.0) -> None:
         self.rng = np.random.default_rng(seed)
+        self.policy_rng = np.random.default_rng([seed, 1])  # separate, so positions match the value-only mock
         self.noise = noise
 
     def sample_positions(self, n: int) -> Positions:
@@ -53,7 +58,28 @@ class MockEngine:
         tempo = np.where(stm == 0, 2.0, -2.0)
         margin = area + 0.3 * strength + tempo + rng.normal(0.0, self.noise, n)
         margin = np.clip(np.round(margin), -NUM_HEXES, NUM_HEXES).astype(np.int16)
-        return Positions(boards=boards, stm=stm, result=np.sign(margin).astype(np.int8), margin=margin)
+        return Positions(boards=boards, stm=stm, result=np.sign(margin).astype(np.int8), margin=margin,
+                         policy=self.mock_policy(boards, stm))
+
+    def mock_policy(self, boards: np.ndarray, stm: np.ndarray) -> np.ndarray:
+        """Noisy softmax over legal moves of a line-of-sight heuristic: tall placements, overwriting
+        opponent stacks and the centre are good; reinforcing own stacks is poor; pass when few moves."""
+        los = los_counts(boards, stm)
+        owners = cell_owners(boards)
+        mover = stm[:, None].astype(owners.dtype)
+        score = (
+            0.5 * los[..., 0]
+            + 1.5 * (owners == 1 - mover)
+            - 1.0 * (owners == mover)
+            + 0.3 * los[..., 1] * (owners == EMPTY)
+            + 0.8 * (1.0 - CENTRE_DISTANCE / RADIUS)
+            + self.policy_rng.normal(0.0, 0.3, owners.shape)
+        )
+        legal = legal_mask(boards, stm)
+        pass_score = 1.0 - 0.2 * legal[:, :PASS_MOVE].sum(axis=1)
+        logits = np.where(legal, np.concatenate([score, pass_score[:, None]], axis=1), -np.inf)
+        e = np.exp(logits - logits.max(axis=1, keepdims=True))
+        return (e / e.sum(axis=1, keepdims=True)).astype(np.float32)
 
 
 def targets(pos: Positions, lam: float) -> np.ndarray:

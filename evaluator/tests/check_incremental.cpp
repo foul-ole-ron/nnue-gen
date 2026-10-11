@@ -1,6 +1,6 @@
 // Usage: check_incremental [net.bin] [test_vectors.bin]   (defaults: net.bin, test_vectors.bin)
 // Plays random moves from the test-vector boards and checks that applyMove
-// matches a full refresh after every ply.
+// matches a full refresh after every ply (value), and every 10th ply (policy).
 #include <cstdio>
 #include <exception>
 #include <fstream>
@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
         std::uniform_int_distribution<int> valueDist(0, 13);
         std::uniform_int_distribution<int> passDist(0, 19);
 
-        size_t checks = 0, failures = 0;
+        size_t checks = 0, failures = 0, policyChecks = 0, policyFailures = 0;
         for (size_t i = 0; i < n; ++i) {
             Board b;
             for (int h = 0; h < kNumHexes; ++h) b[h] = boards[i * kNumHexes + h];
@@ -46,10 +46,18 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "board %zu ply %d: expected %d, got %d%s\n", i, ply, expected, got,
                                  fresh.acc != s.acc ? " (accumulator drift)" : "");
                 }
+                // The policy is costlier; sample every 10th ply.
+                if (ply % 10 == 0) {
+                    ++policyChecks;
+                    if (net.policyLogits(s) != net.policyLogits(fresh) && policyFailures++ < 10) {
+                        std::fprintf(stderr, "board %zu ply %d: policy differs from full refresh\n", i, ply);
+                    }
+                }
             }
         }
         std::printf("%zu/%zu incremental updates match\n", checks - failures, checks);
-        return failures == 0 ? 0 : 1;
+        std::printf("%zu/%zu incremental policies match\n", policyChecks - policyFailures, policyChecks);
+        return failures == 0 && policyFailures == 0 ? 0 : 1;
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "error: %s\n", ex.what());
         return 2;

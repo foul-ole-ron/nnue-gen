@@ -16,9 +16,22 @@ constexpr int kQA = 255;
 constexpr int kQB = 64;
 constexpr int kScale = 400;
 
+// Policy head (float). Policy index = hex, or kPassMove for pass.
+constexpr int kNumMoves = kNumHexes + 1;
+constexpr int kPassMove = kNumHexes;
+constexpr int kNeutralHeight = 2;
+constexpr int kLocalFeatures = 8;
+constexpr int kPolicyContext = 16;
+constexpr int kPolicyHidden = 16;
+
 // Board cell values: 0 = empty, 1-6 = player A height 1-6,
 // 7-12 = player B height 1-6, 13 = neutral stack.
+// Hexes are numbered row by row over the side-6 hexagon (rows of 6, 7, ..., 11, ..., 7, 6);
+// the centre is hex 45.
 using Board = std::array<uint8_t, kNumHexes>;
+
+using MoveMask = std::array<bool, kNumMoves>;
+using PolicyValues = std::array<double, kNumMoves>;
 
 constexpr int kPass = -1;
 
@@ -57,6 +70,18 @@ public:
     // Throws std::invalid_argument on an out-of-range hex or value.
     int applyMove(EvalState& state, const Move& move) const;
 
+    // Legal moves for the side to move: a hex it sees in more directions than the
+    // height of the stack there (empty = 0, neutral = kNeutralHeight), and pass.
+    // Same validation as evaluate.
+    static MoveMask legalMoves(const Board& board, int sideToMove);
+
+    // Policy logits for the state's side to move, reusing its (incremental)
+    // accumulators; illegal moves are -infinity.
+    PolicyValues policyLogits(const EvalState& state) const;
+
+    // Move priors: softmax over the legal moves, 0 for illegal ones.
+    PolicyValues policy(const EvalState& state) const;
+
 private:
     // output(state) converted to player A's view.
     int scoreForA(const EvalState& state) const;
@@ -68,6 +93,17 @@ private:
     std::vector<int16_t> b1_;  // [kHidden]
     std::vector<int16_t> w2_;  // [2 * kHidden], side-to-move half first
     int16_t b2_ = 0;
+
+    // Policy head; layout and meaning as in trainer/nnue_train/netfile.py.
+    std::vector<float> wg_;        // [2 * kHidden][kPolicyContext]
+    std::vector<float> bg_;        // [kPolicyContext]
+    std::vector<float> m1_;        // [kLocalFeatures + kPolicyContext][kPolicyHidden]
+    std::vector<float> mb1_;       // [kPolicyHidden]
+    std::vector<float> m2_;        // [kPolicyHidden]
+    float mb2_ = 0.0f;
+    std::vector<float> cellBias_;  // [kNumHexes]
+    std::vector<float> wpass_;     // [2 * kHidden]
+    float bpass_ = 0.0f;
 };
 
 }  // namespace tumbleweed

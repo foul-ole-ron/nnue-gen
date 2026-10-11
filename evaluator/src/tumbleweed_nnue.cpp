@@ -1,17 +1,25 @@
 #include "tumbleweed_nnue.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 
 namespace tumbleweed {
 namespace {
 
 constexpr char kMagic[4] = {'T', 'W', 'N', 'N'};
-constexpr uint32_t kVersion = 2;
-constexpr size_t kHeaderSize = 4 + 6 * 4;
+constexpr uint32_t kVersion = 3;
+constexpr size_t kHeaderFields = 10;
+constexpr size_t kHeaderSize = 4 + kHeaderFields * 4;
+constexpr size_t kNumI16 = size_t(kNumFeatures) * kHidden + kHidden + 2 * kHidden + 1;
+constexpr size_t kNumF32 = 2 * kHidden * kPolicyContext + kPolicyContext +
+                           (kLocalFeatures + kPolicyContext) * kPolicyHidden + kPolicyHidden + kPolicyHidden + 1 +
+                           kNumHexes + 2 * kHidden + 1;
 
 uint32_t readU32(const unsigned char* p) {
     return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
@@ -25,6 +33,83 @@ std::vector<int16_t> readI16(const unsigned char*& p, size_t count) {
     return out;
 }
 
+std::vector<float> readF32(const unsigned char*& p, size_t count) {
+    std::vector<float> out(count);
+    for (size_t i = 0; i < count; ++i, p += 4) {
+        const uint32_t bits = readU32(p);
+        std::memcpy(&out[i], &bits, sizeof bits);
+    }
+    return out;
+}
+
+// Hex geometry; must match trainer/nnue_train/board.py.
+constexpr int kRadius = 5;
+constexpr int kMaxRay = 2 * kRadius;
+constexpr int kDirections[6][2] = {{1, 0}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}, {0, 1}};
+
+// rays[hex][dir]: hexes seen from `hex` in that direction, nearest first; -1 ends the ray.
+using Rays = std::array<std::array<std::array<int, kMaxRay>, 6>, kNumHexes>;
+
+const Rays& rays() {
+    static const Rays table = [] {
+        // Axial (q, r), row by row: r = -5..5, q ascending.
+        int index[2 * kRadius + 1][2 * kRadius + 1];
+        int coords[kNumHexes][2];
+        for (auto& row : index) std::fill(std::begin(row), std::end(row), -1);
+        int n = 0;
+        for (int r = -kRadius; r <= kRadius; ++r) {
+            for (int q = std::max(-kRadius, -kRadius - r); q <= std::min(kRadius, kRadius - r); ++q, ++n) {
+                index[q + kRadius][r + kRadius] = n;
+                coords[n][0] = q;
+                coords[n][1] = r;
+            }
+        }
+        Rays t;
+        for (int hex = 0; hex < kNumHexes; ++hex) {
+            for (int d = 0; d < 6; ++d) {
+                auto& ray = t[hex][d];
+                ray.fill(-1);
+                int q = coords[hex][0] + kDirections[d][0], r = coords[hex][1] + kDirections[d][1];
+                for (int k = 0; std::abs(q) <= kRadius && std::abs(r) <= kRadius && std::abs(q + r) <= kRadius; ++k) {
+                    ray[k] = index[q + kRadius][r + kRadius];
+                    q += kDirections[d][0];
+                    r += kDirections[d][1];
+                }
+            }
+        }
+        return t;
+    }();
+    return table;
+}
+
+constexpr int kEmptyOwner = -1;
+constexpr int kNeutralOwner = 2;
+
+int ownerOf(int value) { return value == 0 ? kEmptyOwner : value <= 6 ? 0 : value <= 12 ? 1 : kNeutralOwner; }
+int heightOf(int value) { return value == 0 ? 0 : value <= 6 ? value : value <= 12 ? value - 6 : kNeutralHeight; }
+
+struct Sight {
+    int own = 0;  // directions whose nearest stack belongs to `player`
+    int opp = 0;  // ... to the opponent
+};
+
+Sight lineOfSight(const Board& board, int hex, int player) {
+    Sight s;
+    for (const auto& ray : rays()[hex]) {
+        for (int h : ray) {
+            if (h < 0) break;
+            if (board[h] == 0) continue;
+            const int owner = ownerOf(board[h]);
+            if (owner == player) ++s.own;
+            else if (owner == 1 - player) ++s.opp;
+            break;
+        }
+    }
+    return s;
+}
+
+bool canPlace(const Sight& s, int value) { return s.own >= 1 && s.own > heightOf(value); }
+
 }  // namespace
 
 Network Network::load(const std::string& path) {
@@ -32,14 +117,15 @@ Network Network::load(const std::string& path) {
     if (!in) throw std::runtime_error("cannot open network file: " + path);
     std::vector<unsigned char> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 
-    const size_t expected = kHeaderSize + 2 * (size_t(kNumFeatures) * kHidden + kHidden + 2 * kHidden + 1);
+    const size_t expected = kHeaderSize + 2 * kNumI16 + 4 * kNumF32;
     if (data.size() != expected) throw std::runtime_error("unexpected network file size: " + path);
     if (std::memcmp(data.data(), kMagic, 4) != 0) throw std::runtime_error("bad magic: " + path);
 
     const unsigned char* h = data.data() + 4;
-    const uint32_t header[6] = {readU32(h), readU32(h + 4), readU32(h + 8), readU32(h + 12), readU32(h + 16),
-                                readU32(h + 20)};
-    const uint32_t want[6] = {kVersion, kNumFeatures, kHidden, kQA, kQB, kScale};
+    uint32_t header[kHeaderFields];
+    for (size_t i = 0; i < kHeaderFields; ++i) header[i] = readU32(h + 4 * i);
+    const uint32_t want[kHeaderFields] = {kVersion, kNumFeatures, kHidden,        kQA,            kQB,
+                                          kScale,   kNumMoves,    kLocalFeatures, kPolicyContext, kPolicyHidden};
     if (!std::equal(std::begin(header), std::end(header), std::begin(want))) {
         throw std::runtime_error("network version, dimensions or constants do not match: " + path);
     }
@@ -50,6 +136,15 @@ Network Network::load(const std::string& path) {
     net.b1_ = readI16(p, kHidden);
     net.w2_ = readI16(p, 2 * kHidden);
     net.b2_ = readI16(p, 1)[0];
+    net.wg_ = readF32(p, size_t(2) * kHidden * kPolicyContext);
+    net.bg_ = readF32(p, kPolicyContext);
+    net.m1_ = readF32(p, size_t(kLocalFeatures + kPolicyContext) * kPolicyHidden);
+    net.mb1_ = readF32(p, kPolicyHidden);
+    net.m2_ = readF32(p, kPolicyHidden);
+    net.mb2_ = readF32(p, 1)[0];
+    net.cellBias_ = readF32(p, kNumHexes);
+    net.wpass_ = readF32(p, 2 * kHidden);
+    net.bpass_ = readF32(p, 1)[0];
     return net;
 }
 
@@ -119,6 +214,79 @@ int Network::applyMove(EvalState& s, const Move& move) const {
     }
     s.sideToMove = 1 - s.sideToMove;
     return scoreForA(s);
+}
+
+MoveMask Network::legalMoves(const Board& board, int sideToMove) {
+    if (sideToMove != 0 && sideToMove != 1) throw std::invalid_argument("sideToMove must be 0 or 1");
+    for (uint8_t v : board) {
+        if (v > 13) throw std::invalid_argument("board value out of range 0..13");
+    }
+    MoveMask legal{};
+    for (int hex = 0; hex < kNumHexes; ++hex) legal[hex] = canPlace(lineOfSight(board, hex, sideToMove), board[hex]);
+    legal[kPassMove] = true;
+    return legal;
+}
+
+PolicyValues Network::policyLogits(const EvalState& s) const {
+    // Must match policy_logits_ref in trainer/nnue_train/quantize.py (also computed in double).
+    const int side = s.sideToMove;
+    double h[2 * kHidden];
+    for (int j = 0; j < kHidden; ++j) {
+        h[j] = std::clamp(s.acc[side][j], 0, kQA) / double(kQA);
+        h[kHidden + j] = std::clamp(s.acc[1 - side][j], 0, kQA) / double(kQA);
+    }
+
+    double g[kPolicyContext];
+    for (int k = 0; k < kPolicyContext; ++k) {
+        double z = bg_[k];
+        for (int i = 0; i < 2 * kHidden; ++i) z += h[i] * wg_[size_t(i) * kPolicyContext + k];
+        g[k] = std::clamp(z, 0.0, 1.0);
+    }
+
+    // The context part of the first cell-MLP layer is the same for every cell.
+    double context[kPolicyHidden];
+    for (int k = 0; k < kPolicyHidden; ++k) {
+        double z = mb1_[k];
+        for (int c = 0; c < kPolicyContext; ++c) z += g[c] * m1_[size_t(kLocalFeatures + c) * kPolicyHidden + k];
+        context[k] = z;
+    }
+
+    PolicyValues logits;
+    for (int hex = 0; hex < kNumHexes; ++hex) {
+        const int value = s.board[hex];
+        const Sight sight = lineOfSight(s.board, hex, side);
+        if (!canPlace(sight, value)) {
+            logits[hex] = -std::numeric_limits<double>::infinity();
+            continue;
+        }
+        const int owner = ownerOf(value);
+        // own LOS, opp LOS, height, empty, own, opp, neutral, overwrites opponent (the move is legal here)
+        const double local[kLocalFeatures] = {
+            sight.own / 6.0,       sight.opp / 6.0,           heightOf(value) / 6.0,          double(owner == kEmptyOwner),
+            double(owner == side), double(owner == 1 - side), double(owner == kNeutralOwner), double(owner == 1 - side),
+        };
+        double logit = double(mb2_) + cellBias_[hex];
+        for (int k = 0; k < kPolicyHidden; ++k) {
+            double z = context[k];
+            for (int f = 0; f < kLocalFeatures; ++f) z += local[f] * m1_[size_t(f) * kPolicyHidden + k];
+            logit += std::clamp(z, 0.0, 1.0) * m2_[k];
+        }
+        logits[hex] = logit;
+    }
+
+    double pass = bpass_;
+    for (int i = 0; i < 2 * kHidden; ++i) pass += h[i] * wpass_[i];
+    logits[kPassMove] = pass;
+    return logits;
+}
+
+PolicyValues Network::policy(const EvalState& s) const {
+    PolicyValues p = policyLogits(s);
+    const double top = *std::max_element(p.begin(), p.end());  // finite: pass is always legal
+    double sum = 0.0;
+    for (double& x : p) sum += (x = std::exp(x - top));
+    for (double& x : p) x /= sum;
+    return p;
 }
 
 }  // namespace tumbleweed
