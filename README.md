@@ -42,10 +42,3 @@ Build a function in C++ that reads the network from program 1 and evaluates it, 
 
 
 
-I'd like to try the NNUE in an MCTS environment. I want to add a policy head that incorporates local features to the net, as I discussed with your little brother (chat excerpt can be found in policy-chat.md). 
-Feel free to modify the design if you have different insights about this. Add code for training & evaluation to the Trainer, and evaluation (direct and incremental) to the Evaluator.  
-Make sure that the current tests (functionally) still work the same way. Add tests for the new head.
-
-Present a proposed implementation plan and ask questions about any important
-missing requirements. Do not create application files until we agree on the
-plan.
