@@ -13,7 +13,7 @@ namespace tumbleweed {
 namespace {
 
 constexpr char kMagic[4] = {'T', 'W', 'N', 'N'};
-constexpr uint32_t kVersion = 3;
+constexpr uint32_t kVersion = 4;
 constexpr size_t kHeaderFields = 10;
 constexpr size_t kHeaderSize = 4 + kHeaderFields * 4;
 constexpr size_t kNumI16 = size_t(kNumFeatures) * kHidden + kHidden + 2 * kHidden + 1;
@@ -260,15 +260,17 @@ PolicyValues Network::policyLogits(const EvalState& s) const {
             continue;
         }
         const int owner = ownerOf(value);
-        // own LOS, opp LOS, height, empty, own, opp, neutral, overwrites opponent (the move is legal here)
-        const double local[kLocalFeatures] = {
-            sight.own / 6.0,       sight.opp / 6.0,           heightOf(value) / 6.0,          double(owner == kEmptyOwner),
-            double(owner == side), double(owner == 1 - side), double(owner == kNeutralOwner), double(owner == 1 - side),
-        };
+        const int height = heightOf(value);
+        const double scaled[kLocalScaled] = {sight.own / 6.0, sight.opp / 6.0, height / 6.0};
+        const int ownerSlot = owner == kEmptyOwner ? 0 : owner == side ? 1 : owner == 1 - side ? 2 : 3;
+        // One-hot features: adding their m1 rows equals multiplying by 1.
+        const int hot[5] = {kLocalOwnLos + sight.own, kLocalOppLos + sight.opp, kLocalHeight + height,
+                            kLocalOwner + ownerSlot, kLocalJointLos + sight.own * 7 + sight.opp};
         double logit = double(mb2_) + cellBias_[hex];
         for (int k = 0; k < kPolicyHidden; ++k) {
             double z = context[k];
-            for (int f = 0; f < kLocalFeatures; ++f) z += local[f] * m1_[size_t(f) * kPolicyHidden + k];
+            for (int f = 0; f < kLocalScaled; ++f) z += scaled[f] * m1_[size_t(f) * kPolicyHidden + k];
+            for (int row : hot) z += m1_[size_t(row) * kPolicyHidden + k];
             logit += std::clamp(z, 0.0, 1.0) * m2_[k];
         }
         logits[hex] = logit;

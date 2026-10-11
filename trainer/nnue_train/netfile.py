@@ -9,7 +9,7 @@ Little-endian layout:
     i16    b2
     f32    wg[2 * hidden][policy_context]
     f32    bg[policy_context]
-    f32    m1[n_local + policy_context][policy_hidden]   (local feature rows first)
+    f32    m1[n_local + policy_context][policy_hidden]   (local feature rows first, order as in board.py)
     f32    mb1[policy_hidden]
     f32    m2[policy_hidden]
     f32    mb2
@@ -30,7 +30,7 @@ from nnue_train.model import HIDDEN, POLICY_CONTEXT, POLICY_HIDDEN, POLICY_NAMES
 from nnue_train.quantize import QA, QB, SCALE, QuantizedNet
 
 MAGIC = b"TWNN"
-VERSION = 3
+VERSION = 4
 HEADER = struct.Struct("<4s10I")
 I16 = np.dtype("<i2")
 F32 = np.dtype("<f4")

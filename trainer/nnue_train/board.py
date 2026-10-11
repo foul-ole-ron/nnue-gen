@@ -22,7 +22,16 @@ RADIUS = 5
 NUM_MOVES = NUM_HEXES + 1
 PASS_MOVE = NUM_HEXES
 NEUTRAL_HEIGHT = 2
-NUM_LOCAL = 8  # own LOS/6, opp LOS/6, height/6, empty, own, opp, neutral, overwrites opponent
+
+# Local policy features per hex, side to move's view: 3 scaled values followed by one-hot groups.
+# A one-hot slot times its m1 row is a row lookup, so the C++ adds rows instead of multiplying.
+LOCAL_OWN_LOS = 3  # one-hot own LOS 0..6
+LOCAL_OPP_LOS = 10  # one-hot opponent LOS 0..6
+LOCAL_HEIGHT = 17  # one-hot stack height 0..6 (neutral = NEUTRAL_HEIGHT)
+LOCAL_OWNER = 24  # one-hot owner: empty, own, opponent, neutral
+LOCAL_JOINT_LOS = 28  # one-hot (own LOS, opponent LOS) at own * 7 + opp
+NUM_LOCAL = 77
+NUM_LOCAL_SCALED = 3  # own LOS / 6, opponent LOS / 6, height / 6
 
 EMPTY = -1
 NEUTRAL_OWNER = 2
@@ -110,20 +119,23 @@ def policy_inputs(boards: np.ndarray, stm: np.ndarray, dtype=np.float32) -> tupl
     owners = cell_owners(boards)
     heights = cell_heights(boards)
     can_place = (own_los >= 1) & (own_los > heights)
-    opp_stack = owners == 1 - stm[:, None]
-    local = np.stack(
+    owner_slot = np.select([owners == EMPTY, owners == stm[:, None], owners == 1 - stm[:, None]], [0, 1, 2], 3)
+
+    local = np.zeros(own_los.shape + (NUM_LOCAL,), dtype=dtype)
+    local[..., 0] = own_los / 6.0
+    local[..., 1] = opp_los / 6.0
+    local[..., 2] = heights / 6.0
+    hot = np.stack(
         [
-            own_los / 6.0,
-            opp_los / 6.0,
-            heights / 6.0,
-            owners == EMPTY,
-            owners == stm[:, None],
-            opp_stack,
-            owners == NEUTRAL_OWNER,
-            opp_stack & can_place,
+            LOCAL_OWN_LOS + own_los,
+            LOCAL_OPP_LOS + opp_los,
+            LOCAL_HEIGHT + heights,
+            LOCAL_OWNER + owner_slot,
+            LOCAL_JOINT_LOS + own_los * 7 + opp_los,  # own + opp <= 6, so this stays below NUM_LOCAL
         ],
         axis=-1,
-    ).astype(dtype)
+    )
+    np.put_along_axis(local, hot, 1.0, axis=-1)
     legal = np.concatenate([can_place, np.ones((len(stm), 1), dtype=bool)], axis=1)
     return local, legal
 

@@ -5,14 +5,15 @@ import pytest
 
 from nnue_train import board as bd
 from nnue_train.board import (
-    COORDS, NUM_MOVES, PASS_MOVE, RAYS, SYMMETRIES, augment, legal_mask, los_counts, policy_inputs,
+    COORDS, LOCAL_HEIGHT, LOCAL_JOINT_LOS, LOCAL_OPP_LOS, LOCAL_OWN_LOS, LOCAL_OWNER, NUM_LOCAL, NUM_LOCAL_SCALED,
+    NUM_MOVES, PASS_MOVE, RAYS, SYMMETRIES, augment, legal_mask, los_counts, policy_inputs,
 )
 from nnue_train.engine import MockEngine, targets
 from nnue_train.features import CENTRE_HEX, NEUTRAL, NUM_HEXES, PLAYER_A, PLAYER_B
 from nnue_train.model import (
     Batch, Params, forward, loss_and_grads, masked_softmax, policy_forward, policy_metrics,
 )
-from nnue_train.netfile import read_net, write_net
+from nnue_train.netfile import VERSION, read_net, write_net
 from nnue_train.quantize import policy_logits_ref, quantize
 from nnue_train.train import train
 
@@ -112,11 +113,28 @@ def test_legality_needs_sight_above_current_height():
     assert legal_mask(empty, np.array([PLAYER_A]))[0].sum() == 1 and legal_mask(empty, np.array([0]))[0, PASS_MOVE]
 
 
-def test_local_features_flag_overwriting_opponent():
+def test_local_feature_layout():
     b = make_board({(0, 0): 7, (1, 0): 1, (-1, 0): 1})  # B height 1 at centre, seen twice by A
     local, legal = policy_inputs(b, np.array([PLAYER_A]))
     assert legal[0, CENTRE_HEX]
-    assert local[0, CENTRE_HEX].tolist() == pytest.approx([2 / 6, 0, 1 / 6, 0, 0, 1, 0, 1])
+    want = np.zeros(NUM_LOCAL)
+    want[:NUM_LOCAL_SCALED] = [2 / 6, 0, 1 / 6]
+    want[[LOCAL_OWN_LOS + 2, LOCAL_OPP_LOS + 0, LOCAL_HEIGHT + 1, LOCAL_OWNER + 2, LOCAL_JOINT_LOS + 2 * 7 + 0]] = 1
+    assert local[0, CENTRE_HEX].tolist() == pytest.approx(want.tolist())
+
+
+def test_each_one_hot_group_has_one_slot_set():
+    pos = MockEngine(seed=26).sample_positions(64)
+    local, _ = policy_inputs(pos.boards, pos.stm)
+    groups = [LOCAL_OWN_LOS, LOCAL_OPP_LOS, LOCAL_HEIGHT, LOCAL_OWNER, LOCAL_JOINT_LOS, NUM_LOCAL]
+    for start, end in zip(groups, groups[1:]):
+        assert (local[..., start:end].sum(axis=-1) == 1).all()
+        assert set(np.unique(local[..., start:end])) <= {0.0, 1.0}
+    joint = local[..., LOCAL_JOINT_LOS:].argmax(axis=-1)
+    own = local[..., LOCAL_OWN_LOS:LOCAL_OPP_LOS].argmax(axis=-1)
+    opp = local[..., LOCAL_OPP_LOS:LOCAL_HEIGHT].argmax(axis=-1)
+    assert np.array_equal(joint, own * 7 + opp)
+    assert np.allclose(local[..., 0] * 6, own) and np.allclose(local[..., 1] * 6, opp)
 
 
 def test_colour_swap_gives_identical_policy():
@@ -143,7 +161,8 @@ def test_policy_gradients_match_numerical():
     eps = 1e-6
     active = int(np.flatnonzero(batch.x_stm[0])[0])
     probes = [("w1", (active, 3)), ("b1", (5,)), ("wg", (3, 2)), ("wg", (100, 7)), ("bg", (4,)),
-              ("m1", (1, 3)), ("m1", (12, 5)), ("mb1", (2,)), ("m2", (6,)), ("mb2", (0,)),
+              ("m1", (1, 3)), ("m1", (LOCAL_OWN_LOS + 1, 5)), ("m1", (LOCAL_OWNER + 0, 2)),
+              ("m1", (LOCAL_JOINT_LOS + 7, 4)), ("m1", (NUM_LOCAL + 5, 6)), ("mb1", (2,)), ("m2", (6,)), ("mb2", (0,)),
               ("cell_bias", (CENTRE_HEX,)), ("wpass", (9,)), ("bpass", (0,))]
     for name, idx in probes:
         arr = getattr(p, name)
@@ -196,7 +215,7 @@ def test_netfile_rejects_old_version(tmp_path):
     path = tmp_path / "net.bin"
     write_net(quantize(Params.init(np.random.default_rng(21))), path)
     data = bytearray(path.read_bytes())
-    data[4:8] = struct.pack("<I", 2)
+    data[4:8] = struct.pack("<I", VERSION - 1)  # the previous policy-feature layout
     path.write_bytes(bytes(data))
     with pytest.raises(ValueError, match="version"):
         read_net(path)

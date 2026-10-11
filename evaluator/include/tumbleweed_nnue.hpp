@@ -20,7 +20,15 @@ constexpr int kScale = 400;
 constexpr int kNumMoves = kNumHexes + 1;
 constexpr int kPassMove = kNumHexes;
 constexpr int kNeutralHeight = 2;
-constexpr int kLocalFeatures = 8;
+// Local policy features per hex (side to move's view); order as in trainer/nnue_train/board.py:
+// 3 scaled values (own LOS/6, opponent LOS/6, height/6), then one-hot groups starting at these offsets.
+constexpr int kLocalScaled = 3;
+constexpr int kLocalOwnLos = 3;     // own LOS 0..6
+constexpr int kLocalOppLos = 10;    // opponent LOS 0..6
+constexpr int kLocalHeight = 17;    // stack height 0..6
+constexpr int kLocalOwner = 24;     // empty, own, opponent, neutral
+constexpr int kLocalJointLos = 28;  // (own LOS, opponent LOS) at own * 7 + opp
+constexpr int kLocalFeatures = 77;
 constexpr int kPolicyContext = 16;
 constexpr int kPolicyHidden = 16;
 
