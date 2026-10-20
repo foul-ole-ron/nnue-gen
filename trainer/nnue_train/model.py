@@ -11,6 +11,7 @@ HIDDEN = 64
 POLICY_CONTEXT = 16
 POLICY_HIDDEN = 16
 WEIGHT_CLAMP = 1.98  # keeps quantized weights and b2 inside int16
+POLICY_CLAMP = 15.9  # keeps policy weights * QP inside int16, also after folding (row + scaled row)
 
 VALUE_NAMES = ("w1", "b1", "w2", "b2")
 POLICY_NAMES = ("wg", "bg", "m1", "mb1", "m2", "mb2", "wpass", "bpass")
@@ -22,7 +23,7 @@ class Params:
     b1: np.ndarray  # (HIDDEN,)
     w2: np.ndarray  # (2 * HIDDEN,) side-to-move half first
     b2: np.ndarray  # (1,)
-    # Policy head (float, never quantized), on h = CReLU([acc_stm, acc_nstm]).
+    # Policy head (trained in float, quantized by quantize.py), on h = CReLU([acc_stm, acc_nstm]).
     wg: np.ndarray  # (2 * HIDDEN, POLICY_CONTEXT) global context g = CReLU(h @ wg + bg)
     bg: np.ndarray  # (POLICY_CONTEXT,)
     m1: np.ndarray  # (NUM_LOCAL + POLICY_CONTEXT, POLICY_HIDDEN) shared per-cell MLP on [local, g]
@@ -55,9 +56,10 @@ class Params:
         return VALUE_NAMES + POLICY_NAMES
 
     def clamp(self) -> None:
-        # Only the quantized value weights must fit int16; the policy head stays float.
         for name in VALUE_NAMES:
             np.clip(getattr(self, name), -WEIGHT_CLAMP, WEIGHT_CLAMP, out=getattr(self, name))
+        for name in POLICY_NAMES:
+            np.clip(getattr(self, name), -POLICY_CLAMP, POLICY_CLAMP, out=getattr(self, name))
 
 
 @dataclass

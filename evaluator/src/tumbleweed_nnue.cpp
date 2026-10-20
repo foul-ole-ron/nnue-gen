@@ -6,20 +6,19 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
-#include <limits>
 #include <stdexcept>
 
 namespace tumbleweed {
 namespace {
 
 constexpr char kMagic[4] = {'T', 'W', 'N', 'N'};
-constexpr uint32_t kVersion = 5;
-constexpr size_t kHeaderFields = 10;
+constexpr uint32_t kVersion = 6;
+constexpr size_t kHeaderFields = 12;
 constexpr size_t kHeaderSize = 4 + kHeaderFields * 4;
-constexpr size_t kNumI16 = size_t(kNumFeatures) * kHidden + kHidden + 2 * kHidden + 1;
-constexpr size_t kNumF32 = 2 * kHidden * kPolicyContext + kPolicyContext +
-                           (kLocalFeatures + kPolicyContext) * kPolicyHidden + kPolicyHidden + kPolicyHidden + 1 +
-                           2 * kHidden + 1;
+constexpr size_t kNumI16 = size_t(kNumFeatures) * kHidden + kHidden + 2 * kHidden + 1 +   // value head
+                           2 * kHidden * kPolicyContext + (kLocalFeatures + kPolicyContext) * kPolicyHidden +
+                           kPolicyHidden + 2 * kHidden;                                    // policy weights
+constexpr size_t kNumI32 = kPolicyContext + kPolicyHidden + 1 + 1;                         // policy biases
 
 uint32_t readU32(const unsigned char* p) {
     return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
@@ -33,13 +32,30 @@ std::vector<int16_t> readI16(const unsigned char*& p, size_t count) {
     return out;
 }
 
-std::vector<float> readF32(const unsigned char*& p, size_t count) {
-    std::vector<float> out(count);
-    for (size_t i = 0; i < count; ++i, p += 4) {
-        const uint32_t bits = readU32(p);
-        std::memcpy(&out[i], &bits, sizeof bits);
-    }
+std::vector<int32_t> readI32(const unsigned char*& p, size_t count) {
+    std::vector<int32_t> out(count);
+    for (size_t i = 0; i < count; ++i, p += 4) out[i] = static_cast<int32_t>(readU32(p));
     return out;
+}
+
+// Policy sum (units kQA * kQP) to an int16 logit (units 1 / kPolicyScale nat), truncating toward zero.
+int16_t toLogit(int32_t out) {
+    const int64_t logit = int64_t(out) * kPolicyScale / (kQA * kQP);
+    return static_cast<int16_t>(std::clamp<int64_t>(logit, -32767, 32767));  // -32768 is kIllegalLogit
+}
+
+// exp(-d / kPolicyScale) * 2^24 for logit gaps d; a move further behind the best (~1e-7) gets 0.
+constexpr int kExpTableSize = 16 * kPolicyScale;
+
+const std::array<uint32_t, kExpTableSize>& expTable() {
+    static const auto table = [] {
+        std::array<uint32_t, kExpTableSize> t;
+        for (int d = 0; d < kExpTableSize; ++d) {
+            t[d] = static_cast<uint32_t>(std::lround(std::ldexp(std::exp(-double(d) / kPolicyScale), 24)));
+        }
+        return t;
+    }();
+    return table;
 }
 
 // Hex geometry; must match trainer/nnue_train/board.py.
@@ -127,15 +143,16 @@ Network Network::load(const std::string& path) {
     if (!in) throw std::runtime_error("cannot open network file: " + path);
     std::vector<unsigned char> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 
-    const size_t expected = kHeaderSize + 2 * kNumI16 + 4 * kNumF32;
+    const size_t expected = kHeaderSize + 2 * kNumI16 + 4 * kNumI32;
     if (data.size() != expected) throw std::runtime_error("unexpected network file size: " + path);
     if (std::memcmp(data.data(), kMagic, 4) != 0) throw std::runtime_error("bad magic: " + path);
 
     const unsigned char* h = data.data() + 4;
     uint32_t header[kHeaderFields];
     for (size_t i = 0; i < kHeaderFields; ++i) header[i] = readU32(h + 4 * i);
-    const uint32_t want[kHeaderFields] = {kVersion, kNumFeatures, kHidden,        kQA,            kQB,
-                                          kScale,   kNumMoves,    kLocalFeatures, kPolicyContext, kPolicyHidden};
+    const uint32_t want[kHeaderFields] = {kVersion,  kNumFeatures,   kHidden,        kQA,
+                                          kQB,       kScale,         kNumMoves,      kLocalFeatures,
+                                          kPolicyContext, kPolicyHidden, kQP,        kPolicyScale};
     if (!std::equal(std::begin(header), std::end(header), std::begin(want))) {
         throw std::runtime_error("network version, dimensions or constants do not match: " + path);
     }
@@ -146,14 +163,14 @@ Network Network::load(const std::string& path) {
     net.b1_ = readI16(p, kHidden);
     net.w2_ = readI16(p, 2 * kHidden);
     net.b2_ = readI16(p, 1)[0];
-    net.wg_ = readF32(p, size_t(2) * kHidden * kPolicyContext);
-    net.bg_ = readF32(p, kPolicyContext);
-    net.m1_ = readF32(p, size_t(kLocalFeatures + kPolicyContext) * kPolicyHidden);
-    net.mb1_ = readF32(p, kPolicyHidden);
-    net.m2_ = readF32(p, kPolicyHidden);
-    net.mb2_ = readF32(p, 1)[0];
-    net.wpass_ = readF32(p, 2 * kHidden);
-    net.bpass_ = readF32(p, 1)[0];
+    net.wg_ = readI16(p, size_t(2) * kHidden * kPolicyContext);
+    net.bg_ = readI32(p, kPolicyContext);
+    net.m1_ = readI16(p, size_t(kLocalFeatures + kPolicyContext) * kPolicyHidden);
+    net.mb1_ = readI32(p, kPolicyHidden);
+    net.m2_ = readI16(p, kPolicyHidden);
+    net.mb2_ = readI32(p, 1)[0];
+    net.wpass_ = readI16(p, 2 * kHidden);
+    net.bpass_ = readI32(p, 1)[0];
     return net;
 }
 
@@ -236,70 +253,76 @@ MoveMask Network::legalMoves(const Board& board, int sideToMove) {
     return legal;
 }
 
-PolicyValues Network::policyLogits(const EvalState& s) const {
-    // Must match policy_logits_ref in trainer/nnue_train/quantize.py (also computed in double).
+PolicyLogits Network::policyLogits(const EvalState& s) const {
+    // Must match policy_logits_int in trainer/nnue_train/quantize.py bit for bit. Sums are in units of
+    // kQA * kQP and fit int32; a negative sum / kQP clamps to 0 whatever the rounding.
     const int side = s.sideToMove;
-    double h[2 * kHidden];
+    int32_t h[2 * kHidden];
     for (int j = 0; j < kHidden; ++j) {
-        h[j] = std::clamp(s.acc[side][j], 0, kQA) / double(kQA);
-        h[kHidden + j] = std::clamp(s.acc[1 - side][j], 0, kQA) / double(kQA);
+        h[j] = std::clamp(s.acc[side][j], 0, kQA);
+        h[kHidden + j] = std::clamp(s.acc[1 - side][j], 0, kQA);
     }
 
-    double g[kPolicyContext];
+    int32_t g[kPolicyContext];
     for (int k = 0; k < kPolicyContext; ++k) {
-        double z = bg_[k];
+        int32_t z = bg_[k];
         for (int i = 0; i < 2 * kHidden; ++i) z += h[i] * wg_[size_t(i) * kPolicyContext + k];
-        g[k] = std::clamp(z, 0.0, 1.0);
+        g[k] = std::clamp(z / kQP, 0, kQA);
     }
 
     // The context part of the first cell-MLP layer is the same for every cell.
-    double context[kPolicyHidden];
+    int32_t context[kPolicyHidden];
     for (int k = 0; k < kPolicyHidden; ++k) {
-        double z = mb1_[k];
+        int32_t z = mb1_[k];
         for (int c = 0; c < kPolicyContext; ++c) z += g[c] * m1_[size_t(kLocalFeatures + c) * kPolicyHidden + k];
         context[k] = z;
     }
 
-    PolicyValues logits;
+    PolicyLogits logits;
     for (int hex = 0; hex < kNumHexes; ++hex) {
         const int value = s.board[hex];
         const Sight sight = lineOfSight(s.board, hex, side);
         if (!canPlace(sight, value)) {
-            logits[hex] = -std::numeric_limits<double>::infinity();
+            logits[hex] = kIllegalLogit;
             continue;
         }
         const int owner = ownerOf(value);
         const int height = heightOf(value);
-        const double scaled[kLocalScaled] = {sight.own / 6.0, sight.opp / 6.0, height / 6.0};
         const int ownerSlot = owner == kEmptyOwner ? 0 : owner == side ? 1 : owner == 1 - side ? 2 : 3;
-        // One-hot features: adding their m1 rows equals multiplying by 1.
+        // One-hot features (input kQA): adding their m1 rows equals multiplying. The scaled features
+        // are folded into these rows by the trainer.
         const int hot[6] = {kLocalOwnLos + sight.own, kLocalOppLos + sight.opp, kLocalHeight + height,
                             kLocalOwner + ownerSlot, kLocalJointLos + sight.own * 7 + sight.opp,
                             kLocalRing + geometry().ring[hex]};
         const bool corner = geometry().corner[hex];
-        double logit = mb2_;
+        int32_t out = mb2_;
         for (int k = 0; k < kPolicyHidden; ++k) {
-            double z = context[k];
-            for (int f = 0; f < kLocalScaled; ++f) z += scaled[f] * m1_[size_t(f) * kPolicyHidden + k];
-            for (int row : hot) z += m1_[size_t(row) * kPolicyHidden + k];
-            if (corner) z += m1_[size_t(kLocalCorner) * kPolicyHidden + k];
-            logit += std::clamp(z, 0.0, 1.0) * m2_[k];
+            int32_t rows = 0;
+            for (int row : hot) rows += m1_[size_t(row) * kPolicyHidden + k];
+            if (corner) rows += m1_[size_t(kLocalCorner) * kPolicyHidden + k];
+            out += std::clamp((context[k] + kQA * rows) / kQP, 0, kQA) * m2_[k];
         }
-        logits[hex] = logit;
+        logits[hex] = toLogit(out);
     }
 
-    double pass = bpass_;
+    int32_t pass = bpass_;
     for (int i = 0; i < 2 * kHidden; ++i) pass += h[i] * wpass_[i];
-    logits[kPassMove] = pass;
+    logits[kPassMove] = toLogit(pass);
     return logits;
 }
 
 PolicyValues Network::policy(const EvalState& s) const {
-    PolicyValues p = policyLogits(s);
-    const double top = *std::max_element(p.begin(), p.end());  // finite: pass is always legal
-    double sum = 0.0;
-    for (double& x : p) sum += (x = std::exp(x - top));
-    for (double& x : p) x /= sum;
+    const PolicyLogits logits = policyLogits(s);
+    const int top = *std::max_element(logits.begin(), logits.end());  // legal: pass always is
+    const auto& table = expTable();
+    std::array<uint32_t, kNumMoves> e{};
+    uint64_t sum = 0;
+    for (int m = 0; m < kNumMoves; ++m) {
+        const int d = top - logits[m];
+        if (logits[m] != kIllegalLogit && d < kExpTableSize) sum += e[m] = table[d];
+    }
+    PolicyValues p;
+    for (int m = 0; m < kNumMoves; ++m) p[m] = e[m] / double(sum);
     return p;
 }
 

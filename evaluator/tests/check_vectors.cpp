@@ -1,9 +1,9 @@
 // Usage: check_vectors [net.bin] [test_vectors.bin]   (defaults: net.bin, test_vectors.bin)
 // Test-vector layout is documented in trainer/nnue_train/vectors.py.
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <exception>
 #include <fstream>
 #include <iterator>
@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         const size_t n = size_t(d[4]) | size_t(d[5]) << 8 | size_t(d[6]) << 16 | size_t(d[7]) << 24;
-        if (d.size() != 8 + n * (tumbleweed::kNumHexes + 1 + 4 + tumbleweed::kNumMoves * (1 + 8))) {
+        if (d.size() != 8 + n * (tumbleweed::kNumHexes + 1 + 4 + tumbleweed::kNumMoves * (1 + 2))) {
             std::fprintf(stderr, "test vector file size mismatch\n");
             return 2;
         }
@@ -42,24 +42,36 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "vector %zu: expected %d, got %d\n", i, expected, got);
             }
 
-            // Policy: legal mask must match exactly, logits of legal moves to within 1e-6.
+            // Policy: legal mask and int16 logits must match exactly (illegal = kIllegalLogit), and the
+            // lookup-table softmax must match an exact softmax of those logits to within 1e-6.
             const auto mask = tumbleweed::Network::legalMoves(b, stm[i]);
-            const auto policy = net.policyLogits(net.initState(b, stm[i]));
+            const auto state = net.initState(b, stm[i]);
+            const auto policy = net.policyLogits(state);
+            const auto priors = net.policy(state);
+            const int top = *std::max_element(policy.begin(), policy.end());
+            double expSum = 0.0, priorSum = 0.0;
+            for (int16_t x : policy) {
+                if (x != tumbleweed::kIllegalLogit) expSum += std::exp(double(x - top) / tumbleweed::kPolicyScale);
+            }
             for (int m = 0; m < tumbleweed::kNumMoves; ++m) {
+                const unsigned char* l = logits + (i * tumbleweed::kNumMoves + m) * 2;
+                const int want = int16_t(uint16_t(l[0]) | uint16_t(l[1]) << 8);
                 const bool wantLegal = legal[i * tumbleweed::kNumMoves + m] != 0;
-                uint64_t bits = 0;
-                for (int k = 7; k >= 0; --k) bits = bits << 8 | logits[(i * tumbleweed::kNumMoves + m) * 8 + k];
-                double want;
-                std::memcpy(&want, &bits, sizeof want);
-                const bool ok = mask[m] == wantLegal &&
-                                (wantLegal ? std::fabs(policy[m] - want) <= 1e-6 : std::isinf(policy[m]) && policy[m] < 0);
-                if (!ok) {
+                const double exact = policy[m] == tumbleweed::kIllegalLogit
+                                         ? 0.0
+                                         : std::exp(double(policy[m] - top) / tumbleweed::kPolicyScale) / expSum;
+                priorSum += priors[m];
+                if (mask[m] != wantLegal || policy[m] != want || std::fabs(priors[m] - exact) > 1e-6) {
                     if (policyFailures++ < 10) {
-                        std::fprintf(stderr, "vector %zu move %d: expected %s %.9f, got %s %.9f\n", i, m,
-                                     wantLegal ? "legal" : "illegal", want, mask[m] ? "legal" : "illegal", policy[m]);
+                        std::fprintf(stderr, "vector %zu move %d: expected %s %d (prior %.9f), got %s %d (prior %.9f)\n",
+                                     i, m, wantLegal ? "legal" : "illegal", want, exact, mask[m] ? "legal" : "illegal",
+                                     int(policy[m]), priors[m]);
                     }
                     break;
                 }
+            }
+            if (std::fabs(priorSum - 1.0) > 1e-9 && policyFailures++ < 10) {
+                std::fprintf(stderr, "vector %zu: priors sum to %.12f\n", i, priorSum);
             }
         }
         std::printf("%zu/%zu vectors match\n", n - failures, n);

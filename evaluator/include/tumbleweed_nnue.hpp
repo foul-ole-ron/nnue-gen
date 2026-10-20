@@ -16,12 +16,18 @@ constexpr int kQA = 255;
 constexpr int kQB = 64;
 constexpr int kScale = 400;
 
-// Policy head (float). Policy index = hex, or kPassMove for pass.
+// Policy head (integer). Policy index = hex, or kPassMove for pass.
+// Weights int16 at kQP, biases int32 at kQA * kQP, activations in [0, kQA];
+// logits int16 in units of 1 / kPolicyScale nat, kIllegalLogit on illegal moves.
+constexpr int kQP = 1024;
+constexpr int kPolicyScale = 256;
+constexpr int16_t kIllegalLogit = -32768;
 constexpr int kNumMoves = kNumHexes + 1;
 constexpr int kPassMove = kNumHexes;
 constexpr int kNeutralHeight = 2;
 // Local policy features per hex (side to move's view); order as in trainer/nnue_train/board.py:
 // 3 scaled values (own LOS/6, opponent LOS/6, height/6), then one-hot groups starting at these offsets.
+// The trainer folds the scaled values into their one-hot groups, so their m1 rows are zero and unused.
 constexpr int kLocalScaled = 3;
 constexpr int kLocalOwnLos = 3;     // own LOS 0..6
 constexpr int kLocalOppLos = 10;    // opponent LOS 0..6
@@ -41,6 +47,7 @@ constexpr int kPolicyHidden = 16;
 using Board = std::array<uint8_t, kNumHexes>;
 
 using MoveMask = std::array<bool, kNumMoves>;
+using PolicyLogits = std::array<int16_t, kNumMoves>;
 using PolicyValues = std::array<double, kNumMoves>;
 
 constexpr int kPass = -1;
@@ -87,10 +94,10 @@ public:
     static MoveMask legalMoves(const Board& board, int sideToMove);
 
     // Policy logits for the state's side to move, reusing its (incremental)
-    // accumulators; illegal moves are -infinity.
-    PolicyValues policyLogits(const EvalState& state) const;
+    // accumulators; illegal moves are kIllegalLogit.
+    PolicyLogits policyLogits(const EvalState& state) const;
 
-    // Move priors: softmax over the legal moves, 0 for illegal ones.
+    // Move priors: softmax over the legal moves (exp from a lookup table), 0 for illegal ones.
     PolicyValues policy(const EvalState& state) const;
 
 private:
@@ -106,14 +113,14 @@ private:
     int16_t b2_ = 0;
 
     // Policy head; layout and meaning as in trainer/nnue_train/netfile.py.
-    std::vector<float> wg_;        // [2 * kHidden][kPolicyContext]
-    std::vector<float> bg_;        // [kPolicyContext]
-    std::vector<float> m1_;        // [kLocalFeatures + kPolicyContext][kPolicyHidden]
-    std::vector<float> mb1_;       // [kPolicyHidden]
-    std::vector<float> m2_;        // [kPolicyHidden]
-    float mb2_ = 0.0f;
-    std::vector<float> wpass_;     // [2 * kHidden]
-    float bpass_ = 0.0f;
+    std::vector<int16_t> wg_;      // [2 * kHidden][kPolicyContext]
+    std::vector<int32_t> bg_;      // [kPolicyContext]
+    std::vector<int16_t> m1_;      // [kLocalFeatures + kPolicyContext][kPolicyHidden]
+    std::vector<int32_t> mb1_;     // [kPolicyHidden]
+    std::vector<int16_t> m2_;      // [kPolicyHidden]
+    int32_t mb2_ = 0;
+    std::vector<int16_t> wpass_;   // [2 * kHidden]
+    int32_t bpass_ = 0;
 };
 
 }  // namespace tumbleweed

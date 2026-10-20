@@ -14,7 +14,7 @@ from nnue_train.model import (
     Batch, Params, forward, loss_and_grads, masked_softmax, policy_forward, policy_metrics,
 )
 from nnue_train.netfile import VERSION, read_net, write_net
-from nnue_train.quantize import policy_logits_ref, quantize
+from nnue_train.quantize import ILLEGAL_LOGIT, POLICY_SCALE, fold_scaled, policy_logits_int, quantize
 from nnue_train.train import train
 
 
@@ -170,7 +170,7 @@ def test_colour_swap_gives_identical_policy():
     local_s, legal_s = policy_inputs(swapped, flipped)
     assert np.array_equal(local, local_s) and np.array_equal(legal, legal_s)
     net = quantize(Params.init(np.random.default_rng(13)))
-    assert np.array_equal(policy_logits_ref(net, pos.boards, pos.stm), policy_logits_ref(net, swapped, flipped))
+    assert np.array_equal(policy_logits_int(net, pos.boards, pos.stm), policy_logits_int(net, swapped, flipped))
 
 
 def test_policy_gradients_match_numerical():
@@ -234,7 +234,7 @@ def test_netfile_round_trip_with_policy(tmp_path):
     back = read_net(path)
     for name in p.names():
         assert np.array_equal(getattr(net, name), getattr(back, name)), name
-    assert back.wg.dtype == np.float32 and back.w1.dtype == np.int16
+    assert back.w1.dtype == back.wg.dtype == back.m1.dtype == np.int16 and back.bg.dtype == back.bpass.dtype == np.int32
 
 
 def test_netfile_rejects_old_version(tmp_path):
@@ -247,15 +247,42 @@ def test_netfile_rejects_old_version(tmp_path):
         read_net(path)
 
 
-def test_policy_ref_close_to_float():
-    p = Params.init(np.random.default_rng(22))
-    pos = MockEngine(seed=23).sample_positions(256)
+def float_policy_logits(p, pos) -> tuple[np.ndarray, Batch]:
     batch = Batch.from_positions(pos.boards, pos.stm, targets(pos, 0.1), pos.policy)
     _, c = forward(p, batch.x_stm, batch.x_nstm)
-    flt, _ = policy_forward(p, np.concatenate([c["h_s"], c["h_n"]], 1), batch.local, batch.legal)
-    ref = policy_logits_ref(quantize(p), pos.boards, pos.stm)
-    assert np.array_equal(np.isfinite(flt), np.isfinite(ref))
-    err = np.abs(flt[batch.legal] - ref[batch.legal])
+    return policy_forward(p, np.concatenate([c["h_s"], c["h_n"]], 1), batch.local, batch.legal)[0], batch
+
+
+def test_folding_scaled_features_keeps_float_logits():
+    p = Params.init(np.random.default_rng(26))
+    p.m1[:NUM_LOCAL_SCALED] = np.random.default_rng(27).normal(0, 1, p.m1[:NUM_LOCAL_SCALED].shape)
+    pos = MockEngine(seed=28).sample_positions(64)
+    before, batch = float_policy_logits(p, pos)
+    folded = fold_scaled(p.m1)
+    assert (folded[:NUM_LOCAL_SCALED] == 0).all()
+    p.m1 = folded
+    after, _ = float_policy_logits(p, pos)
+    assert np.allclose(before[batch.legal], after[batch.legal], atol=1e-5)
+
+
+def test_policy_clamp_keeps_quantized_net_in_range():
+    p = Params.init(np.random.default_rng(29))
+    for name in p.names():
+        getattr(p, name)[...] = np.where(np.arange(getattr(p, name).size).reshape(getattr(p, name).shape) % 2, 1e3, -1e3)
+    p.clamp()
+    net = quantize(p)  # raises OverflowError if anything leaves int16 / int32
+    pos = MockEngine(seed=30).sample_positions(16)
+    logits = policy_logits_int(net, pos.boards, pos.stm)
+    assert logits.dtype == np.int16 and (logits[legal_mask(pos.boards, pos.stm)] > ILLEGAL_LOGIT).all()
+
+
+def test_policy_int_close_to_float():
+    p = Params.init(np.random.default_rng(22))
+    pos = MockEngine(seed=23).sample_positions(256)
+    flt, batch = float_policy_logits(p, pos)
+    ref = policy_logits_int(quantize(p), pos.boards, pos.stm)
+    assert np.array_equal(batch.legal, ref != ILLEGAL_LOGIT)
+    err = np.abs(flt[batch.legal] - ref[batch.legal] / POLICY_SCALE)
     assert err.mean() < 0.01 and err.max() < 0.05
 
 
